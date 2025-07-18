@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { User } from '../types/seo';
+import { User } from '../types';
 
 interface AuthContextType {
   user: User | null;
@@ -11,27 +11,35 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
+// Mock users for demo
+const mockUsers: User[] = [
+  {
+    id: '1',
+    email: 'admin@analysethat.co.uk',
+    name: 'Admin User',
+    role: 'admin',
+    createdAt: '2025-01-01',
+    subscription: 'enterprise'
+  },
+  {
+    id: '2',
+    email: 'user@example.com',
+    name: 'John Smith',
+    role: 'user',
+    createdAt: '2025-01-01',
+    subscription: 'pro'
   }
-  return context;
-};
+];
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // Check for stored user session
-    const storedUser = localStorage.getItem('analysethat_user');
+    // Check for stored auth
+    const storedUser = localStorage.getItem('analysethat-user');
     if (storedUser) {
-      try {
-        setUser(JSON.parse(storedUser));
-      } catch (error) {
-        localStorage.removeItem('analysethat_user');
-      }
+      setUser(JSON.parse(storedUser));
     }
     setIsLoading(false);
   }, []);
@@ -39,38 +47,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (email: string, password: string): Promise<boolean> => {
     setIsLoading(true);
     
-    // Simulate API call
+    // Mock authentication
     await new Promise(resolve => setTimeout(resolve, 1000));
     
-    // Demo users
-    const demoUsers: User[] = [
-      {
-        id: '1',
-        email: 'admin@analysethat.com',
-        name: 'Admin User',
-        role: 'admin',
-        createdAt: new Date().toISOString(),
-        subscription: 'enterprise',
-        analysisCount: 0,
-        maxAnalyses: -1 // unlimited
-      },
-      {
-        id: '2',
-        email: 'user@example.com',
-        name: 'Demo User',
-        role: 'user',
-        createdAt: new Date().toISOString(),
-        subscription: 'pro',
-        analysisCount: 5,
-        maxAnalyses: 100
-      }
-    ];
-    
-    const foundUser = demoUsers.find(u => u.email === email);
-    
-    if (foundUser && (password === 'admin123' || password === 'demo123')) {
+    const foundUser = mockUsers.find(u => u.email === email);
+    if (foundUser && password === 'password') {
       setUser(foundUser);
-      localStorage.setItem('analysethat_user', JSON.stringify(foundUser));
+      localStorage.setItem('analysethat-user', JSON.stringify(foundUser));
       setIsLoading(false);
       return true;
     }
@@ -82,7 +65,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const register = async (email: string, password: string, name: string): Promise<boolean> => {
     setIsLoading(true);
     
-    // Simulate API call
+    // Mock registration
     await new Promise(resolve => setTimeout(resolve, 1000));
     
     const newUser: User = {
@@ -91,20 +74,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       name,
       role: 'user',
       createdAt: new Date().toISOString(),
-      subscription: 'free',
-      analysisCount: 0,
-      maxAnalyses: 5
+      subscription: 'free'
     };
     
     setUser(newUser);
-    localStorage.setItem('analysethat_user', JSON.stringify(newUser));
+    localStorage.setItem('analysethat-user', JSON.stringify(newUser));
     setIsLoading(false);
     return true;
   };
 
   const logout = () => {
     setUser(null);
-    localStorage.removeItem('analysethat_user');
+    localStorage.removeItem('analysethat-user');
   };
 
   return (
@@ -112,4 +93,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       {children}
     </AuthContext.Provider>
   );
-};
+}
+
+export function useAuth() {
+  const context = useContext(AuthContext);
+  if (context === undefined) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
+}
