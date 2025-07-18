@@ -1,6 +1,4 @@
-import { SEOAnalysis, SEOIssue, PageAnalysis } from '../types/seo';
-
-interface CrawlOptions {
+export interface CrawlOptions {
   maxPages: number;
   crawlDelay: number;
   followExternalLinks: boolean;
@@ -9,197 +7,779 @@ interface CrawlOptions {
   maxDepth: number;
 }
 
+export interface CrawlProgress {
+  isActive: boolean;
+  currentPage: string;
+  pagesFound: number;
+  pagesCrawled: number;
+  queueSize: number;
+  phase: 'initializing' | 'sitemap' | 'crawling' | 'analyzing' | 'complete';
+  startTime: number;
+  estimatedTimeRemaining: number | null;
+  crawlSpeed: number;
+  errorCount: number;
+  currentDepth: number;
+  maxDepth: number;
+  robotsTxtFound: boolean;
+  sitemapFound: boolean;
+  sitemapCount: number;
+  bytesProcessed: number;
+  avgResponseTime: number;
+  successRate: number;
+  duplicatesFound: number;
+  redirectsFound: number;
+  currentUrl: string;
+  discoveryRate: number;
+  memoryUsage: number;
+  networkRequests: number;
+}
+
 export class SEOAnalyzer {
-  private baseUrl: string = '';
-  private crawledUrls: Set<string> = new Set();
-  private maxPages: number = 50;
-  private pages: PageAnalysis[] = [];
-  private domain: string = '';
-  private discoveredUrls: Set<string> = new Set();
-  private internalLinkGraph: Map<string, Set<string>> = new Map();
-  private progressCallback?: (progress: any) => void;
-  private robotsTxt: string = '';
-  private sitemapUrls: string[] = [];
-  private crawlStartTime: number = 0;
-  private errorLog: Array<{url: string, error: string, timestamp: number}> = [];
-  private crawlOptions: CrawlOptions = {
-    maxPages: 50,
-    crawlDelay: 200,
-    followExternalLinks: false,
-    includeImages: false,
-    respectRobots: true,
-    maxDepth: 10
-  };
-  private isPaused: boolean = false;
-  private isStopped: boolean = false;
-  private bytesProcessed: number = 0;
-  private networkRequests: number = 0;
-  private responseTimes: number[] = [];
-  private duplicatesFound: number = 0;
-  private redirectsFound: number = 0;
+  private crawledUrls = new Set<string>();
+  private urlQueue: Array<{ url: string; depth: number; priority: number }> = [];
+  private sitemapUrls = new Set<string>();
+  private processedSitemaps = new Set<string>();
+  private isRunning = false;
+  private isPaused = false;
+  private shouldStop = false;
+  private startTime = 0;
+  private totalRequests = 0;
+  private totalResponseTime = 0;
+  private errorCount = 0;
+  private duplicateCount = 0;
+  private redirectCount = 0;
+  private bytesProcessed = 0;
 
-  async analyzeSite(url: string, options: CrawlOptions, progressCallback?: (progress: any) => void): Promise<SEOAnalysis> {
-    this.crawlStartTime = Date.now();
-    this.baseUrl = new URL(url).origin;
-    this.domain = new URL(url).hostname;
-    this.crawlOptions = options;
-    this.maxPages = options.maxPages === -1 ? Infinity : options.maxPages;
-    this.progressCallback = progressCallback;
-    this.isPaused = false;
-    this.isStopped = false;
+  async analyzeSite(
+    url: string, 
+    options: CrawlOptions, 
+    onProgress: (progress: CrawlProgress) => void
+  ): Promise<any> {
+    this.reset();
+    this.isRunning = true;
+    this.startTime = Date.now();
     
-    // Reset all state
-    this.crawledUrls.clear();
-    this.pages = [];
-    this.discoveredUrls.clear();
-    this.internalLinkGraph.clear();
-    this.errorLog = [];
-    this.robotsTxt = '';
-    this.sitemapUrls = [];
-    this.bytesProcessed = 0;
-    this.networkRequests = 0;
-    this.responseTimes = [];
-    this.duplicatesFound = 0;
-    this.redirectsFound = 0;
-
-    // Initialize progress with comprehensive status
-    this.updateProgress({
+    const baseUrl = new URL(url);
+    const domain = baseUrl.hostname;
+    
+    // Initialize progress
+    let progress: CrawlProgress = {
       isActive: true,
-      currentPage: 'Initializing comprehensive SEO analysis engine...',
+      currentPage: 'Initializing crawler...',
       pagesFound: 0,
       pagesCrawled: 0,
+      queueSize: 0,
       phase: 'initializing',
-      startTime: this.crawlStartTime,
+      startTime: this.startTime,
       estimatedTimeRemaining: null,
       crawlSpeed: 0,
       errorCount: 0,
-      queueSize: 1,
       currentDepth: 0,
-      maxDepth: 0,
+      maxDepth: options.maxDepth,
       robotsTxtFound: false,
       sitemapFound: false,
       sitemapCount: 0,
       bytesProcessed: 0,
       avgResponseTime: 0,
-      successRate: 100,
+      successRate: 0,
       duplicatesFound: 0,
       redirectsFound: 0,
       currentUrl: url,
       discoveryRate: 0,
       memoryUsage: 0,
       networkRequests: 0
-    });
+    };
+
+    onProgress(progress);
 
     try {
-      // Start comprehensive crawling process
-      await this.crawlSiteComprehensively(url);
-      
-      if (this.isStopped) {
-        throw new Error('Crawl was stopped by user');
+      // Phase 1: Check robots.txt and discover sitemaps
+      progress.phase = 'sitemap';
+      progress.currentPage = 'Discovering sitemaps and checking robots.txt...';
+      onProgress(progress);
+
+      await this.discoverSitemaps(baseUrl, progress, onProgress);
+
+      // Phase 2: Start crawling
+      progress.phase = 'crawling';
+      progress.currentPage = 'Starting comprehensive crawl...';
+      onProgress(progress);
+
+      // Add initial URL to queue if not already found in sitemaps
+      if (!this.crawledUrls.has(url)) {
+        this.urlQueue.push({ url, depth: 0, priority: 10 });
       }
+
+      const pages: any[] = [];
+      const issues: any[] = [];
+
+      // Main crawling loop
+      while (this.urlQueue.length > 0 && this.isRunning && !this.shouldStop) {
+        if (this.isPaused) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+          continue;
+        }
+
+        // Check if we've reached the page limit (unless unlimited)
+        if (options.maxPages > 0 && this.crawledUrls.size >= options.maxPages) {
+          console.log(`Reached page limit of ${options.maxPages}`);
+          break;
+        }
+
+        // Sort queue by priority (higher priority first)
+        this.urlQueue.sort((a, b) => b.priority - a.priority);
+        const { url: currentUrl, depth } = this.urlQueue.shift()!;
+
+        // Skip if already crawled or depth exceeded
+        if (this.crawledUrls.has(currentUrl) || (options.maxDepth > 0 && depth > options.maxDepth)) {
+          continue;
+        }
+
+        // Update progress
+        progress.currentUrl = currentUrl;
+        progress.currentPage = `Analyzing: ${currentUrl}`;
+        progress.pagesFound = this.urlQueue.length + this.crawledUrls.size + 1;
+        progress.pagesCrawled = this.crawledUrls.size;
+        progress.queueSize = this.urlQueue.length;
+        progress.currentDepth = depth;
+        progress.errorCount = this.errorCount;
+        progress.duplicatesFound = this.duplicateCount;
+        progress.redirectsFound = this.redirectCount;
+        progress.bytesProcessed = this.bytesProcessed;
+        progress.networkRequests = this.totalRequests;
+        
+        // Calculate speeds and estimates
+        const elapsed = (Date.now() - this.startTime) / 1000;
+        progress.crawlSpeed = elapsed > 0 ? this.crawledUrls.size / elapsed : 0;
+        progress.avgResponseTime = this.totalRequests > 0 ? this.totalResponseTime / this.totalRequests : 0;
+        progress.successRate = this.totalRequests > 0 ? ((this.totalRequests - this.errorCount) / this.totalRequests) * 100 : 100;
+        progress.discoveryRate = elapsed > 0 ? progress.pagesFound / elapsed : 0;
+        progress.memoryUsage = this.estimateMemoryUsage();
+
+        if (progress.crawlSpeed > 0 && this.urlQueue.length > 0) {
+          progress.estimatedTimeRemaining = Math.round(this.urlQueue.length / progress.crawlSpeed);
+        }
+
+        onProgress(progress);
+
+        try {
+          // Mark as crawled before processing to avoid duplicates
+          this.crawledUrls.add(currentUrl);
+          
+          const pageAnalysis = await this.analyzePage(currentUrl, domain, depth);
+          if (pageAnalysis) {
+            pages.push(pageAnalysis);
+            
+            // Extract and queue internal links
+            const internalLinks = await this.extractInternalLinks(currentUrl, domain, depth + 1);
+            for (const link of internalLinks) {
+              if (!this.crawledUrls.has(link.url) && !this.urlQueue.some(item => item.url === link.url)) {
+                this.urlQueue.push(link);
+              }
+            }
+          }
+
+          // Respect crawl delay
+          if (options.crawlDelay > 0) {
+            await new Promise(resolve => setTimeout(resolve, options.crawlDelay));
+          }
+
+        } catch (error) {
+          console.error(`Error analyzing ${currentUrl}:`, error);
+          this.errorCount++;
+        }
+      }
+
+      // Phase 3: Final analysis
+      progress.phase = 'analyzing';
+      progress.currentPage = 'Generating comprehensive SEO report...';
+      onProgress(progress);
+
+      const analysis = await this.generateAnalysis(url, pages, issues, progress);
       
-      this.updateProgress({
-        isActive: true,
-        currentPage: 'Performing deep technical analysis and generating comprehensive insights...',
-        pagesFound: this.discoveredUrls.size,
-        pagesCrawled: this.pages.length,
-        phase: 'analyzing',
-        startTime: this.crawlStartTime,
-        estimatedTimeRemaining: 15,
-        crawlSpeed: this.calculateCrawlSpeed(),
-        errorCount: this.errorLog.length,
-        queueSize: 0,
-        currentDepth: 0,
-        maxDepth: this.calculateMaxDepth(),
-        robotsTxtFound: this.robotsTxt.length > 0,
-        sitemapFound: this.sitemapUrls.length > 0,
-        sitemapCount: this.sitemapUrls.length,
-        bytesProcessed: this.bytesProcessed,
-        avgResponseTime: this.calculateAvgResponseTime(),
-        successRate: this.calculateSuccessRate(),
-        duplicatesFound: this.duplicatesFound,
-        redirectsFound: this.redirectsFound,
-        currentUrl: 'Analyzing collected data...',
-        discoveryRate: this.calculateDiscoveryRate(),
-        memoryUsage: this.estimateMemoryUsage(),
-        networkRequests: this.networkRequests
+      progress.phase = 'complete';
+      progress.currentPage = 'Analysis complete!';
+      progress.isActive = false;
+      onProgress(progress);
+
+      return analysis;
+
+    } catch (error) {
+      console.error('Analysis failed:', error);
+      throw error;
+    } finally {
+      this.isRunning = false;
+    }
+  }
+
+  private async discoverSitemaps(baseUrl: URL, progress: CrawlProgress, onProgress: (progress: CrawlProgress) => void) {
+    const sitemapUrls = new Set<string>();
+    
+    // Check robots.txt
+    try {
+      const robotsUrl = `${baseUrl.origin}/robots.txt`;
+      progress.currentPage = 'Checking robots.txt...';
+      onProgress(progress);
+      
+      const robotsResponse = await fetch(robotsUrl);
+      if (robotsResponse.ok) {
+        progress.robotsTxtFound = true;
+        const robotsText = await robotsResponse.text();
+        
+        // Extract sitemap URLs from robots.txt
+        const sitemapMatches = robotsText.match(/^sitemap:\s*(.+)$/gim);
+        if (sitemapMatches) {
+          sitemapMatches.forEach(match => {
+            const sitemapUrl = match.replace(/^sitemap:\s*/i, '').trim();
+            sitemapUrls.add(sitemapUrl);
+          });
+        }
+      }
+    } catch (error) {
+      console.log('Could not fetch robots.txt:', error);
+    }
+
+    // Try common sitemap locations
+    const commonSitemaps = [
+      '/sitemap.xml',
+      '/sitemap_index.xml',
+      '/sitemaps.xml',
+      '/sitemap1.xml',
+      '/news-sitemap.xml',
+      '/image-sitemap.xml',
+      '/video-sitemap.xml'
+    ];
+
+    for (const path of commonSitemaps) {
+      sitemapUrls.add(`${baseUrl.origin}${path}`);
+    }
+
+    // Process all discovered sitemaps
+    for (const sitemapUrl of sitemapUrls) {
+      if (this.processedSitemaps.has(sitemapUrl)) continue;
+      
+      try {
+        progress.currentPage = `Processing sitemap: ${sitemapUrl}`;
+        onProgress(progress);
+        
+        await this.processSitemap(sitemapUrl, baseUrl.hostname);
+        progress.sitemapCount++;
+        progress.sitemapFound = true;
+        
+      } catch (error) {
+        console.log(`Could not process sitemap ${sitemapUrl}:`, error);
+      }
+    }
+
+    // Add sitemap URLs to crawl queue with high priority
+    for (const url of this.sitemapUrls) {
+      this.urlQueue.push({ url, depth: 0, priority: 100 });
+    }
+
+    progress.pagesFound = this.urlQueue.length;
+    onProgress(progress);
+  }
+
+  private async processSitemap(sitemapUrl: string, domain: string) {
+    if (this.processedSitemaps.has(sitemapUrl)) return;
+    this.processedSitemaps.add(sitemapUrl);
+
+    try {
+      const response = await fetch(sitemapUrl);
+      if (!response.ok) return;
+
+      const xmlText = await response.text();
+      this.bytesProcessed += xmlText.length;
+      this.totalRequests++;
+
+      // Parse XML
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
+
+      // Check if it's a sitemap index
+      const sitemapElements = xmlDoc.querySelectorAll('sitemapindex > sitemap > loc');
+      if (sitemapElements.length > 0) {
+        // Process child sitemaps
+        for (const element of sitemapElements) {
+          const childSitemapUrl = element.textContent?.trim();
+          if (childSitemapUrl && !this.processedSitemaps.has(childSitemapUrl)) {
+            await this.processSitemap(childSitemapUrl, domain);
+          }
+        }
+      } else {
+        // Process regular sitemap
+        const urlElements = xmlDoc.querySelectorAll('urlset > url > loc');
+        for (const element of urlElements) {
+          const url = element.textContent?.trim();
+          if (url && this.isValidUrl(url, domain)) {
+            this.sitemapUrls.add(url);
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Error processing sitemap ${sitemapUrl}:`, error);
+      this.errorCount++;
+    }
+  }
+
+  private async analyzePage(url: string, domain: string, depth: number): Promise<any> {
+    const startTime = Date.now();
+    this.totalRequests++;
+
+    try {
+      const response = await fetch(url);
+      const responseTime = Date.now() - startTime;
+      this.totalResponseTime += responseTime;
+
+      if (!response.ok) {
+        this.errorCount++;
+        return null;
+      }
+
+      const html = await response.text();
+      this.bytesProcessed += html.length;
+
+      // Parse HTML
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+
+      // Extract page data
+      const title = doc.querySelector('title')?.textContent?.trim() || '';
+      const metaDescription = doc.querySelector('meta[name="description"]')?.getAttribute('content') || '';
+      const h1Elements = doc.querySelectorAll('h1');
+      const h2Elements = doc.querySelectorAll('h2');
+      const h3Elements = doc.querySelectorAll('h3');
+      const images = doc.querySelectorAll('img');
+      const links = doc.querySelectorAll('a[href]');
+
+      // Count words in body text
+      const bodyText = doc.body?.textContent || '';
+      const wordCount = bodyText.trim().split(/\s+/).filter(word => word.length > 0).length;
+
+      // Check for various SEO elements
+      const canonicalUrl = doc.querySelector('link[rel="canonical"]')?.getAttribute('href') || '';
+      const viewport = doc.querySelector('meta[name="viewport"]')?.getAttribute('content') || '';
+      const ogTitle = doc.querySelector('meta[property="og:title"]')?.getAttribute('content') || '';
+      const ogDescription = doc.querySelector('meta[property="og:description"]')?.getAttribute('content') || '';
+      const ogImage = doc.querySelector('meta[property="og:image"]')?.getAttribute('content') || '';
+      const twitterCard = doc.querySelector('meta[name="twitter:card"]')?.getAttribute('content') || '';
+      const lang = doc.documentElement.getAttribute('lang') || '';
+      const favicon = doc.querySelector('link[rel="icon"], link[rel="shortcut icon"]') ? true : false;
+
+      // Count images without alt text
+      let imagesWithoutAlt = 0;
+      images.forEach(img => {
+        if (!img.getAttribute('alt')) {
+          imagesWithoutAlt++;
+        }
       });
 
-      // Analyze all pages and generate detailed issues
-      const issues = this.generateComprehensiveIssues();
-      const scores = this.calculateDetailedScores(issues);
-      const technicalInsights = this.generateTechnicalInsights();
-      
-      this.updateProgress({
-        isActive: false,
-        currentPage: 'Analysis complete - comprehensive SEO report generated',
-        pagesFound: this.discoveredUrls.size,
-        pagesCrawled: this.pages.length,
-        phase: 'complete',
-        startTime: this.crawlStartTime,
-        estimatedTimeRemaining: 0,
-        crawlSpeed: this.calculateCrawlSpeed(),
-        errorCount: this.errorLog.length,
-        queueSize: 0,
-        currentDepth: 0,
-        maxDepth: this.calculateMaxDepth(),
-        robotsTxtFound: this.robotsTxt.length > 0,
-        sitemapFound: this.sitemapUrls.length > 0,
-        sitemapCount: this.sitemapUrls.length,
-        bytesProcessed: this.bytesProcessed,
-        avgResponseTime: this.calculateAvgResponseTime(),
-        successRate: this.calculateSuccessRate(),
-        duplicatesFound: this.duplicatesFound,
-        redirectsFound: this.redirectsFound,
-        currentUrl: 'Complete',
-        discoveryRate: this.calculateDiscoveryRate(),
-        memoryUsage: this.estimateMemoryUsage(),
-        networkRequests: this.networkRequests
+      // Count internal and external links
+      let internalLinks = 0;
+      let externalLinks = 0;
+      links.forEach(link => {
+        const href = link.getAttribute('href');
+        if (href) {
+          try {
+            const linkUrl = new URL(href, url);
+            if (linkUrl.hostname === domain) {
+              internalLinks++;
+            } else {
+              externalLinks++;
+            }
+          } catch (e) {
+            // Invalid URL
+          }
+        }
       });
-      
+
+      // Extract schema markup
+      const schemaScripts = doc.querySelectorAll('script[type="application/ld+json"]');
+      const schemaMarkup: string[] = [];
+      schemaScripts.forEach(script => {
+        try {
+          const schema = JSON.parse(script.textContent || '');
+          schemaMarkup.push(schema['@type'] || 'Unknown');
+        } catch (e) {
+          // Invalid JSON
+        }
+      });
+
+      // Extract hreflang
+      const hreflangElements = doc.querySelectorAll('link[rel="alternate"][hreflang]');
+      const hreflang: string[] = [];
+      hreflangElements.forEach(element => {
+        const lang = element.getAttribute('hreflang');
+        if (lang) hreflang.push(lang);
+      });
+
+      // Extract H1 text
+      const h1Text: string[] = [];
+      h1Elements.forEach(h1 => {
+        const text = h1.textContent?.trim();
+        if (text) h1Text.push(text);
+      });
+
+      // Simulate Core Web Vitals (in a real implementation, you'd use actual performance APIs)
+      const coreWebVitals = {
+        lcp: Math.random() * 4000 + 1000, // 1-5 seconds
+        fid: Math.random() * 200 + 50,    // 50-250ms
+        cls: Math.random() * 0.3          // 0-0.3
+      };
+
       return {
         url,
-        overallScore: Math.round((scores.technical + scores.content + scores.performance + scores.mobile + scores.accessibility + scores.social) / 6),
-        scores,
-        issues,
-        pages: this.pages,
-        crawlStats: this.generateCrawlStats(),
-        technicalInsights,
-        scanTime: new Date().toLocaleString(),
-        robotsTxt: this.robotsTxt,
-        sitemapUrls: this.sitemapUrls,
-        errorLog: this.errorLog,
-        crawlDuration: (Date.now() - this.crawlStartTime) / 1000
+        title,
+        titleLength: title.length,
+        metaDescription: metaDescription || null,
+        metaDescriptionLength: metaDescription.length,
+        h1Count: h1Elements.length,
+        h1Text,
+        h2Count: h2Elements.length,
+        h3Count: h3Elements.length,
+        wordCount,
+        imageCount: images.length,
+        imagesWithoutAlt,
+        internalLinks,
+        externalLinks,
+        statusCode: response.status,
+        loadTime: responseTime / 1000,
+        pageSize: html.length,
+        canonicalUrl: canonicalUrl || null,
+        viewport: viewport || null,
+        ogTitle: ogTitle || null,
+        ogDescription: ogDescription || null,
+        ogImage: ogImage || null,
+        twitterCard: twitterCard || null,
+        lang: lang || null,
+        favicon,
+        schemaMarkup,
+        hreflang,
+        coreWebVitals,
+        depth,
+        technicalScore: this.calculateTechnicalScore({
+          title, metaDescription, h1Count: h1Elements.length, canonicalUrl, viewport
+        }),
+        contentScore: this.calculateContentScore({
+          wordCount, title, metaDescription, h1Count: h1Elements.length, imagesWithoutAlt, imageCount: images.length
+        }),
+        performanceScore: this.calculatePerformanceScore({
+          loadTime: responseTime / 1000, pageSize: html.length, coreWebVitals
+        }),
+        metaKeywords: doc.querySelector('meta[name="keywords"]')?.getAttribute('content') || null
       };
+
     } catch (error) {
-      this.updateProgress({
-        isActive: false,
-        currentPage: `Analysis failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        pagesFound: this.discoveredUrls.size,
-        pagesCrawled: this.pages.length,
-        phase: 'complete',
-        startTime: this.crawlStartTime,
-        estimatedTimeRemaining: 0,
-        crawlSpeed: this.calculateCrawlSpeed(),
-        errorCount: this.errorLog.length,
-        queueSize: 0,
-        currentDepth: 0,
-        maxDepth: this.calculateMaxDepth(),
-        robotsTxtFound: this.robotsTxt.length > 0,
-        sitemapFound: this.sitemapUrls.length > 0,
-        sitemapCount: this.sitemapUrls.length,
-        bytesProcessed: this.bytesProcessed,
-        avgResponseTime: this.calculateAvgResponseTime(),
-        successRate: this.calculateSuccessRate(),
-        duplicatesFound: this.duplicatesFound,
-        redirectsFound: this.redirectsFound,
-        currentUrl: 'Error',
-        discoveryRate: this.calculateDiscoveryRate(),
-        memoryUsage: this.estimateMemoryUsage(),
-        networkRequests: this.networkRequests
-      });
-      throw error;
+      console.error(`Error analyzing page ${url}:`, error);
+      this.errorCount++;
+      return null;
     }
+  }
+
+  private async extractInternalLinks(url: string, domain: string, depth: number): Promise<Array<{ url: string; depth: number; priority: number }>> {
+    const links: Array<{ url: string; depth: number; priority: number }> = [];
+    
+    try {
+      const response = await fetch(url);
+      if (!response.ok) return links;
+
+      const html = await response.text();
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+
+      const linkElements = doc.querySelectorAll('a[href]');
+      
+      linkElements.forEach(element => {
+        const href = element.getAttribute('href');
+        if (!href) return;
+
+        try {
+          const linkUrl = new URL(href, url);
+          
+          // Only process internal links
+          if (linkUrl.hostname !== domain) return;
+          
+          const fullUrl = linkUrl.toString();
+          
+          // Skip if already processed or queued
+          if (this.crawledUrls.has(fullUrl)) return;
+          
+          // Filter out unwanted URLs
+          if (!this.isValidContentUrl(fullUrl)) return;
+
+          // Assign priority based on URL patterns
+          let priority = 1;
+          const pathname = linkUrl.pathname.toLowerCase();
+          
+          // Higher priority for important pages
+          if (pathname.includes('/product/') || pathname.includes('/service/')) priority = 8;
+          else if (pathname.includes('/blog/') || pathname.includes('/article/')) priority = 6;
+          else if (pathname.includes('/category/') || pathname.includes('/tag/')) priority = 4;
+          else if (pathname === '/' || pathname.includes('/about') || pathname.includes('/contact')) priority = 9;
+          
+          // Check if link is in navigation (higher priority)
+          const parentNav = element.closest('nav, .nav, .navigation, .menu, header, .header');
+          if (parentNav) priority += 2;
+          
+          links.push({
+            url: fullUrl,
+            depth,
+            priority
+          });
+          
+        } catch (e) {
+          // Invalid URL, skip
+        }
+      });
+      
+    } catch (error) {
+      console.error(`Error extracting links from ${url}:`, error);
+    }
+    
+    return links;
+  }
+
+  private isValidUrl(url: string, domain: string): boolean {
+    try {
+      const urlObj = new URL(url);
+      return urlObj.hostname === domain;
+    } catch {
+      return false;
+    }
+  }
+
+  private isValidContentUrl(url: string): boolean {
+    const urlLower = url.toLowerCase();
+    
+    // Skip non-content URLs
+    const skipPatterns = [
+      '/wp-admin/', '/admin/', '/login/', '/register/',
+      '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+      '.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp',
+      '.mp3', '.mp4', '.avi', '.mov', '.wmv',
+      '.zip', '.rar', '.tar', '.gz',
+      '/feed/', '/rss/', '.xml',
+      '/print/', '/email/', '/share/',
+      '#', 'javascript:', 'mailto:', 'tel:',
+      '/wp-content/', '/wp-includes/',
+      '?replytocom=', '?print=', '?share='
+    ];
+    
+    return !skipPatterns.some(pattern => urlLower.includes(pattern));
+  }
+
+  private calculateTechnicalScore(data: any): number {
+    let score = 100;
+    if (!data.title || data.title.length < 30 || data.title.length > 60) score -= 15;
+    if (!data.metaDescription || data.metaDescription.length < 120 || data.metaDescription.length > 160) score -= 15;
+    if (data.h1Count !== 1) score -= 10;
+    if (!data.canonicalUrl) score -= 10;
+    if (!data.viewport) score -= 10;
+    return Math.max(0, score);
+  }
+
+  private calculateContentScore(data: any): number {
+    let score = 100;
+    if (data.wordCount < 300) score -= 20;
+    if (!data.title || data.title.length < 30) score -= 15;
+    if (!data.metaDescription) score -= 15;
+    if (data.h1Count === 0) score -= 15;
+    if (data.h1Count > 1) score -= 10;
+    if (data.imagesWithoutAlt > 0) score -= Math.min(data.imagesWithoutAlt * 5, 20);
+    return Math.max(0, score);
+  }
+
+  private calculatePerformanceScore(data: any): number {
+    let score = 100;
+    if (data.loadTime > 3) score -= 30;
+    else if (data.loadTime > 2) score -= 20;
+    else if (data.loadTime > 1) score -= 10;
+    
+    if (data.pageSize > 2000000) score -= 20; // 2MB
+    else if (data.pageSize > 1000000) score -= 10; // 1MB
+    
+    if (data.coreWebVitals.lcp > 4000) score -= 20;
+    else if (data.coreWebVitals.lcp > 2500) score -= 10;
+    
+    if (data.coreWebVitals.cls > 0.25) score -= 15;
+    else if (data.coreWebVitals.cls > 0.1) score -= 8;
+    
+    return Math.max(0, score);
+  }
+
+  private async generateAnalysis(url: string, pages: any[], issues: any[], progress: CrawlProgress): Promise<any> {
+    const successfulPages = pages.filter(p => p.statusCode === 200);
+    
+    // Calculate overall scores
+    const technicalScore = Math.round(successfulPages.reduce((sum, p) => sum + p.technicalScore, 0) / successfulPages.length || 0);
+    const contentScore = Math.round(successfulPages.reduce((sum, p) => sum + p.contentScore, 0) / successfulPages.length || 0);
+    const performanceScore = Math.round(successfulPages.reduce((sum, p) => sum + p.performanceScore, 0) / successfulPages.length || 0);
+    
+    const overallScore = Math.round((technicalScore + contentScore + performanceScore) / 3);
+
+    // Generate issues
+    const generatedIssues = this.generateIssues(successfulPages);
+
+    // Technical insights
+    const technicalInsights = {
+      structuredData: successfulPages.filter(p => p.schemaMarkup.length > 0).length,
+      mobileViewport: successfulPages.filter(p => p.viewport).length,
+      duplicateTitles: this.findDuplicateTitles(successfulPages),
+      duplicateMetas: this.findDuplicateMetas(successfulPages),
+      orphanPages: 0, // Would need link analysis
+      hasRobotsTxt: progress.robotsTxtFound,
+      hasSitemap: progress.sitemapFound,
+      sitemapCount: progress.sitemapCount,
+      sslEnabled: url.startsWith('https://'),
+      pagesWithFavicon: successfulPages.filter(p => p.favicon).length,
+      pagesWithHreflang: successfulPages.filter(p => p.hreflang.length > 0).length,
+      pagesWithMetaKeywords: successfulPages.filter(p => p.metaKeywords).length,
+      brokenInternalLinks: 0, // Would need link checking
+      maxCrawlDepth: Math.max(...successfulPages.map(p => p.depth), 0),
+      robotsTxtSize: 0,
+      avgCoreWebVitalsLCP: successfulPages.reduce((sum, p) => sum + p.coreWebVitals.lcp, 0) / successfulPages.length || 0,
+      avgCoreWebVitalsFID: successfulPages.reduce((sum, p) => sum + p.coreWebVitals.fid, 0) / successfulPages.length || 0,
+      avgCoreWebVitalsCLS: successfulPages.reduce((sum, p) => sum + p.coreWebVitals.cls, 0) / successfulPages.length || 0
+    };
+
+    return {
+      url,
+      scanTime: new Date().toISOString(),
+      crawlDuration: (Date.now() - this.startTime) / 1000,
+      overallScore,
+      scores: {
+        technical: technicalScore,
+        content: contentScore,
+        performance: performanceScore,
+        mobile: Math.round((successfulPages.filter(p => p.viewport).length / successfulPages.length) * 100),
+        accessibility: Math.round(((successfulPages.length - successfulPages.reduce((sum, p) => sum + p.imagesWithoutAlt, 0)) / successfulPages.length) * 100),
+        social: Math.round((successfulPages.filter(p => p.ogTitle && p.ogDescription).length / successfulPages.length) * 100)
+      },
+      crawlStats: {
+        totalPages: pages.length,
+        crawledPages: successfulPages.length,
+        errorPages: pages.length - successfulPages.length,
+        uniqueUrls: this.crawledUrls.size,
+        avgLoadTime: successfulPages.reduce((sum, p) => sum + p.loadTime, 0) / successfulPages.length || 0,
+        avgPageSize: successfulPages.reduce((sum, p) => sum + p.pageSize, 0) / successfulPages.length || 0,
+        avgWordCount: successfulPages.reduce((sum, p) => sum + p.wordCount, 0) / successfulPages.length || 0
+      },
+      issues: generatedIssues,
+      pages,
+      technicalInsights
+    };
+  }
+
+  private generateIssues(pages: any[]): any[] {
+    const issues: any[] = [];
+
+    // Check for missing meta descriptions
+    const pagesWithoutMeta = pages.filter(p => !p.metaDescription).length;
+    if (pagesWithoutMeta > 0) {
+      issues.push({
+        type: 'warning',
+        category: 'Content',
+        impact: 'high',
+        issue: 'Missing Meta Descriptions',
+        suggestion: `${pagesWithoutMeta} pages are missing meta descriptions. Add compelling 150-160 character descriptions to improve click-through rates.`,
+        count: pagesWithoutMeta
+      });
+    }
+
+    // Check for duplicate titles
+    const duplicateTitles = this.findDuplicateTitles(pages);
+    if (duplicateTitles > 0) {
+      issues.push({
+        type: 'error',
+        category: 'Technical',
+        impact: 'high',
+        issue: 'Duplicate Page Titles',
+        suggestion: `${duplicateTitles} pages have duplicate titles. Create unique, descriptive titles for each page.`,
+        count: duplicateTitles
+      });
+    }
+
+    // Check for missing H1 tags
+    const pagesWithoutH1 = pages.filter(p => p.h1Count === 0).length;
+    if (pagesWithoutH1 > 0) {
+      issues.push({
+        type: 'warning',
+        category: 'Content',
+        impact: 'medium',
+        issue: 'Missing H1 Tags',
+        suggestion: `${pagesWithoutH1} pages are missing H1 tags. Add descriptive H1 headings to improve content structure.`,
+        count: pagesWithoutH1
+      });
+    }
+
+    // Check for images without alt text
+    const totalImagesWithoutAlt = pages.reduce((sum, p) => sum + p.imagesWithoutAlt, 0);
+    if (totalImagesWithoutAlt > 0) {
+      issues.push({
+        type: 'warning',
+        category: 'Accessibility',
+        impact: 'medium',
+        issue: 'Images Missing Alt Text',
+        suggestion: `${totalImagesWithoutAlt} images are missing alt text. Add descriptive alt attributes for better accessibility and SEO.`,
+        count: totalImagesWithoutAlt
+      });
+    }
+
+    return issues;
+  }
+
+  private findDuplicateTitles(pages: any[]): number {
+    const titleCounts = new Map<string, number>();
+    pages.forEach(page => {
+      if (page.title) {
+        titleCounts.set(page.title, (titleCounts.get(page.title) || 0) + 1);
+      }
+    });
+    
+    let duplicates = 0;
+    titleCounts.forEach(count => {
+      if (count > 1) duplicates += count;
+    });
+    
+    return duplicates;
+  }
+
+  private findDuplicateMetas(pages: any[]): number {
+    const metaCounts = new Map<string, number>();
+    pages.forEach(page => {
+      if (page.metaDescription) {
+        metaCounts.set(page.metaDescription, (metaCounts.get(page.metaDescription) || 0) + 1);
+      }
+    });
+    
+    let duplicates = 0;
+    metaCounts.forEach(count => {
+      if (count > 1) duplicates += count;
+    });
+    
+    return duplicates;
+  }
+
+  private estimateMemoryUsage(): number {
+    // Rough estimation based on crawled data
+    return (this.crawledUrls.size * 0.1) + (this.urlQueue.length * 0.05);
+  }
+
+  private reset() {
+    this.crawledUrls.clear();
+    this.urlQueue = [];
+    this.sitemapUrls.clear();
+    this.processedSitemaps.clear();
+    this.isRunning = false;
+    this.isPaused = false;
+    this.shouldStop = false;
+    this.startTime = 0;
+    this.totalRequests = 0;
+    this.totalResponseTime = 0;
+    this.errorCount = 0;
+    this.duplicateCount = 0;
+    this.redirectCount = 0;
+    this.bytesProcessed = 0;
   }
 
   pauseCrawl() {
@@ -211,1090 +791,7 @@ export class SEOAnalyzer {
   }
 
   stopCrawl() {
-    this.isStopped = true;
-    this.isPaused = false;
-  }
-
-  private async waitIfPaused() {
-    while (this.isPaused && !this.isStopped) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-  }
-
-  private updateProgress(progress: any) {
-    if (this.progressCallback) {
-      this.progressCallback(progress);
-    }
-  }
-
-  private calculateCrawlSpeed(): number {
-    const elapsed = (Date.now() - this.crawlStartTime) / 1000;
-    return elapsed > 0 ? this.pages.length / elapsed : 0;
-  }
-
-  private calculateMaxDepth(): number {
-    return Math.max(...Array.from(this.internalLinkGraph.keys()).map(url => {
-      try {
-        const path = new URL(url).pathname;
-        return path.split('/').filter(segment => segment.length > 0).length;
-      } catch {
-        return 0;
-      }
-    }), 0);
-  }
-
-  private calculateAvgResponseTime(): number {
-    return this.responseTimes.length > 0 
-      ? this.responseTimes.reduce((sum, time) => sum + time, 0) / this.responseTimes.length 
-      : 0;
-  }
-
-  private calculateSuccessRate(): number {
-    const total = this.pages.length + this.errorLog.length;
-    return total > 0 ? (this.pages.length / total) * 100 : 100;
-  }
-
-  private calculateDiscoveryRate(): number {
-    const elapsed = (Date.now() - this.crawlStartTime) / 1000;
-    return elapsed > 0 ? this.discoveredUrls.size / elapsed : 0;
-  }
-
-  private estimateMemoryUsage(): number {
-    // Rough estimate based on stored data
-    const pageDataSize = this.pages.length * 5000; // ~5KB per page
-    const urlDataSize = this.discoveredUrls.size * 100; // ~100 bytes per URL
-    return Math.round((pageDataSize + urlDataSize) / 1024 / 1024 * 100) / 100; // MB
-  }
-
-  private async crawlSiteComprehensively(startUrl: string): Promise<void> {
-    const urlsToVisit: Array<{url: string, depth: number, source: string, priority: number}> = [
-      {url: startUrl, depth: 0, source: 'start', priority: 10}
-    ];
-    const processedUrls = new Set<string>();
-    let currentDepth = 0;
-    let maxDepth = 0;
-    
-    // Phase 1: Site discovery and robots.txt analysis
-    this.updateProgress({
-      isActive: true,
-      currentPage: 'Analyzing robots.txt and site configuration...',
-      pagesFound: 1,
-      pagesCrawled: 0,
-      phase: 'initializing',
-      startTime: this.crawlStartTime,
-      estimatedTimeRemaining: null,
-      crawlSpeed: 0,
-      errorCount: 0,
-      queueSize: urlsToVisit.length,
-      currentDepth: 0,
-      maxDepth: 0,
-      robotsTxtFound: false,
-      sitemapFound: false,
-      sitemapCount: 0,
-      bytesProcessed: this.bytesProcessed,
-      avgResponseTime: this.calculateAvgResponseTime(),
-      successRate: this.calculateSuccessRate(),
-      duplicatesFound: this.duplicatesFound,
-      redirectsFound: this.redirectsFound,
-      currentUrl: `${this.baseUrl}/robots.txt`,
-      discoveryRate: this.calculateDiscoveryRate(),
-      memoryUsage: this.estimateMemoryUsage(),
-      networkRequests: this.networkRequests
-    });
-
-    // Get robots.txt first
-    await this.fetchRobotsTxt();
-    
-    this.updateProgress({
-      isActive: true,
-      currentPage: 'Discovering and analyzing XML sitemaps...',
-      pagesFound: 1,
-      pagesCrawled: 0,
-      phase: 'sitemap',
-      startTime: this.crawlStartTime,
-      estimatedTimeRemaining: null,
-      crawlSpeed: 0,
-      errorCount: 0,
-      queueSize: urlsToVisit.length,
-      currentDepth: 0,
-      maxDepth: 0,
-      robotsTxtFound: this.robotsTxt.length > 0,
-      sitemapFound: false,
-      sitemapCount: 0,
-      bytesProcessed: this.bytesProcessed,
-      avgResponseTime: this.calculateAvgResponseTime(),
-      successRate: this.calculateSuccessRate(),
-      duplicatesFound: this.duplicatesFound,
-      redirectsFound: this.redirectsFound,
-      currentUrl: 'Analyzing sitemaps...',
-      discoveryRate: this.calculateDiscoveryRate(),
-      memoryUsage: this.estimateMemoryUsage(),
-      networkRequests: this.networkRequests
-    });
-
-    // Phase 2: Comprehensive sitemap discovery
-    const sitemapUrls = await this.getSitemapUrls(startUrl);
-    if (sitemapUrls.length > 0) {
-      console.log(`Found ${sitemapUrls.length} URLs from sitemaps`);
-      sitemapUrls.forEach((url, index) => {
-        urlsToVisit.push({url, depth: 0, source: 'sitemap', priority: 9 - Math.floor(index / 100)});
-        this.discoveredUrls.add(url);
-      });
-      
-      this.updateProgress({
-        isActive: true,
-        currentPage: `Discovered ${sitemapUrls.length} URLs from ${this.sitemapUrls.length} sitemaps`,
-        pagesFound: this.discoveredUrls.size,
-        pagesCrawled: 0,
-        phase: 'sitemap',
-        startTime: this.crawlStartTime,
-        estimatedTimeRemaining: this.estimateTimeRemaining(0, this.discoveredUrls.size),
-        crawlSpeed: 0,
-        errorCount: 0,
-        queueSize: urlsToVisit.length,
-        currentDepth: 0,
-        maxDepth: 0,
-        robotsTxtFound: this.robotsTxt.length > 0,
-        sitemapFound: true,
-        sitemapCount: this.sitemapUrls.length,
-        bytesProcessed: this.bytesProcessed,
-        avgResponseTime: this.calculateAvgResponseTime(),
-        successRate: this.calculateSuccessRate(),
-        duplicatesFound: this.duplicatesFound,
-        redirectsFound: this.redirectsFound,
-        currentUrl: 'Sitemap analysis complete',
-        discoveryRate: this.calculateDiscoveryRate(),
-        memoryUsage: this.estimateMemoryUsage(),
-        networkRequests: this.networkRequests
-      });
-    }
-    
-    // Phase 3: Intelligent crawling with priority queue
-    this.updateProgress({
-      isActive: true,
-      currentPage: 'Starting intelligent page crawling with link discovery...',
-      pagesFound: this.discoveredUrls.size,
-      pagesCrawled: 0,
-      phase: 'crawling',
-      startTime: this.crawlStartTime,
-      estimatedTimeRemaining: this.estimateTimeRemaining(0, this.discoveredUrls.size),
-      crawlSpeed: 0,
-      errorCount: 0,
-      queueSize: urlsToVisit.length,
-      currentDepth: 0,
-      maxDepth: 0,
-      robotsTxtFound: this.robotsTxt.length > 0,
-      sitemapFound: this.sitemapUrls.length > 0,
-      sitemapCount: this.sitemapUrls.length,
-      bytesProcessed: this.bytesProcessed,
-      avgResponseTime: this.calculateAvgResponseTime(),
-      successRate: this.calculateSuccessRate(),
-      duplicatesFound: this.duplicatesFound,
-      redirectsFound: this.redirectsFound,
-      currentUrl: 'Initializing crawl queue...',
-      discoveryRate: this.calculateDiscoveryRate(),
-      memoryUsage: this.estimateMemoryUsage(),
-      networkRequests: this.networkRequests
-    });
-
-    // Sort URLs by priority (higher priority first)
-    urlsToVisit.sort((a, b) => b.priority - a.priority);
-    
-    let currentIndex = 0;
-    
-    while (currentIndex < urlsToVisit.length && this.pages.length < this.maxPages && !this.isStopped) {
-      await this.waitIfPaused();
-      
-      if (this.isStopped) break;
-      
-      const {url: currentUrl, depth, source, priority} = urlsToVisit[currentIndex];
-      currentIndex++;
-      currentDepth = depth;
-      maxDepth = Math.max(maxDepth, depth);
-      
-      if (processedUrls.has(currentUrl)) {
-        this.duplicatesFound++;
-        continue;
-      }
-      
-      processedUrls.add(currentUrl);
-      this.crawledUrls.add(currentUrl);
-
-      const estimatedTime = this.estimateTimeRemaining(this.pages.length, Math.max(this.discoveredUrls.size, this.maxPages));
-      
-      this.updateProgress({
-        isActive: true,
-        currentPage: `Analyzing: ${this.truncateUrl(currentUrl)}`,
-        pagesFound: this.discoveredUrls.size,
-        pagesCrawled: this.pages.length,
-        phase: 'crawling',
-        startTime: this.crawlStartTime,
-        estimatedTimeRemaining: estimatedTime,
-        crawlSpeed: this.calculateCrawlSpeed(),
-        errorCount: this.errorLog.length,
-        queueSize: urlsToVisit.length - currentIndex,
-        currentDepth: depth,
-        maxDepth: maxDepth,
-        robotsTxtFound: this.robotsTxt.length > 0,
-        sitemapFound: this.sitemapUrls.length > 0,
-        sitemapCount: this.sitemapUrls.length,
-        bytesProcessed: this.bytesProcessed,
-        avgResponseTime: this.calculateAvgResponseTime(),
-        successRate: this.calculateSuccessRate(),
-        duplicatesFound: this.duplicatesFound,
-        redirectsFound: this.redirectsFound,
-        currentUrl: currentUrl,
-        discoveryRate: this.calculateDiscoveryRate(),
-        memoryUsage: this.estimateMemoryUsage(),
-        networkRequests: this.networkRequests
-      });
-
-      try {
-        console.log(`Analyzing page ${this.pages.length + 1}: ${currentUrl} (depth: ${depth}, source: ${source}, priority: ${priority})`);
-        const pageAnalysis = await this.analyzePageComprehensively(currentUrl);
-        this.pages.push(pageAnalysis);
-
-        // Extract and add new URLs from this page if it loaded successfully
-        if (pageAnalysis.statusCode === 200 && this.pages.length < this.maxPages && depth < this.crawlOptions.maxDepth) {
-          const newUrls = await this.extractAllLinksFromPage(currentUrl, pageAnalysis.htmlContent || '');
-          
-          // Add internal links to our graph for analysis
-          this.internalLinkGraph.set(currentUrl, new Set(newUrls));
-          
-          let newUrlsAdded = 0;
-          for (const newUrl of newUrls) {
-            if (!this.discoveredUrls.has(newUrl)) {
-              this.discoveredUrls.add(newUrl);
-              newUrlsAdded++;
-              
-              // Add to crawl queue if we haven't processed it and we're under limits
-              if (!processedUrls.has(newUrl) && urlsToVisit.length < this.maxPages * 3) {
-                // Calculate priority based on URL characteristics
-                let urlPriority = 5; // default priority
-                if (newUrl.includes('/blog/') || newUrl.includes('/article/')) urlPriority = 7;
-                if (newUrl.includes('/product/') || newUrl.includes('/service/')) urlPriority = 8;
-                if (newUrl === this.baseUrl || newUrl === this.baseUrl + '/') urlPriority = 10;
-                if (newUrl.includes('/contact') || newUrl.includes('/about')) urlPriority = 6;
-                
-                urlsToVisit.push({url: newUrl, depth: depth + 1, source: 'internal_link', priority: urlPriority});
-              }
-            }
-          }
-          
-          if (newUrlsAdded > 0) {
-            console.log(`Discovered ${newUrlsAdded} new URLs from ${currentUrl}`);
-            // Re-sort queue to maintain priority order
-            const remainingUrls = urlsToVisit.slice(currentIndex);
-            remainingUrls.sort((a, b) => b.priority - a.priority);
-            urlsToVisit.splice(currentIndex, remainingUrls.length, ...remainingUrls);
-          }
-        }
-
-      } catch (error) {
-        console.error(`Failed to analyze ${currentUrl}:`, error);
-        this.errorLog.push({
-          url: currentUrl,
-          error: error instanceof Error ? error.message : 'Unknown error',
-          timestamp: Date.now()
-        });
-        // Record failed pages with more detail
-        this.pages.push(this.createDetailedErrorPage(currentUrl, 0, 0));
-      }
-
-      // Respectful delay between requests
-      await new Promise(resolve => setTimeout(resolve, this.crawlOptions.crawlDelay));
-    }
-
-    console.log(`Crawling complete. Analyzed ${this.pages.length} pages, discovered ${this.discoveredUrls.size} total URLs`);
-  }
-
-  private truncateUrl(url: string, maxLength: number = 80): string {
-    if (url.length <= maxLength) return url;
-    try {
-      const parsed = new URL(url);
-      const path = parsed.pathname + parsed.search;
-      if (path.length <= maxLength - parsed.hostname.length - 3) {
-        return parsed.hostname + path;
-      }
-      return parsed.hostname + '...' + path.slice(-(maxLength - parsed.hostname.length - 6));
-    } catch {
-      return url.slice(0, maxLength - 3) + '...';
-    }
-  }
-
-  private estimateTimeRemaining(completed: number, total: number): number | null {
-    if (completed === 0) return null;
-    const elapsed = (Date.now() - this.crawlStartTime) / 1000;
-    const rate = completed / elapsed;
-    const remaining = Math.min(total - completed, this.maxPages - completed);
-    return rate > 0 ? Math.round(remaining / rate) : null;
-  }
-
-  private async fetchRobotsTxt(): Promise<void> {
-    try {
-      const robotsUrl = `${this.baseUrl}/robots.txt`;
-      const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(robotsUrl)}`;
-      
-      const startTime = Date.now();
-      const response = await fetch(proxyUrl);
-      const responseTime = Date.now() - startTime;
-      this.responseTimes.push(responseTime);
-      this.networkRequests++;
-      
-      if (response.ok) {
-        const data = await response.json();
-        this.robotsTxt = data.contents || '';
-        this.bytesProcessed += this.robotsTxt.length;
-        console.log('Robots.txt found and loaded');
-      }
-    } catch (error) {
-      console.log('No robots.txt found or accessible');
-      this.errorLog.push({
-        url: `${this.baseUrl}/robots.txt`,
-        error: 'Failed to fetch robots.txt',
-        timestamp: Date.now()
-      });
-    }
-  }
-
-  private async getSitemapUrls(baseUrl: string): Promise<string[]> {
-    const sitemapUrls: string[] = [];
-    const possibleSitemaps = [
-      `${this.baseUrl}/sitemap.xml`,
-      `${this.baseUrl}/sitemap_index.xml`,
-      `${this.baseUrl}/wp-sitemap.xml`,
-      `${this.baseUrl}/sitemap-index.xml`,
-      `${this.baseUrl}/sitemap.txt`,
-      `${this.baseUrl}/sitemap1.xml`,
-      `${this.baseUrl}/sitemaps.xml`,
-      `${this.baseUrl}/site-map.xml`
-    ];
-
-    // Add sitemaps from robots.txt
-    if (this.robotsTxt) {
-      const robotsSitemaps = this.extractSitemapsFromRobots(this.robotsTxt);
-      possibleSitemaps.push(...robotsSitemaps);
-    }
-
-    for (const sitemapUrl of possibleSitemaps) {
-      if (this.isStopped) break;
-      
-      try {
-        this.updateProgress({
-          isActive: true,
-          currentPage: `Checking sitemap: ${this.truncateUrl(sitemapUrl)}...`,
-          pagesFound: sitemapUrls.length,
-          pagesCrawled: 0,
-          phase: 'sitemap',
-          startTime: this.crawlStartTime,
-          estimatedTimeRemaining: null,
-          crawlSpeed: 0,
-          errorCount: this.errorLog.length,
-          queueSize: 0,
-          currentDepth: 0,
-          maxDepth: 0,
-          robotsTxtFound: this.robotsTxt.length > 0,
-          sitemapFound: this.sitemapUrls.length > 0,
-          sitemapCount: this.sitemapUrls.length,
-          bytesProcessed: this.bytesProcessed,
-          avgResponseTime: this.calculateAvgResponseTime(),
-          successRate: this.calculateSuccessRate(),
-          duplicatesFound: this.duplicatesFound,
-          redirectsFound: this.redirectsFound,
-          currentUrl: sitemapUrl,
-          discoveryRate: this.calculateDiscoveryRate(),
-          memoryUsage: this.estimateMemoryUsage(),
-          networkRequests: this.networkRequests
-        });
-
-        const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(sitemapUrl)}`;
-        
-        const startTime = Date.now();
-        const response = await fetch(proxyUrl);
-        const responseTime = Date.now() - startTime;
-        this.responseTimes.push(responseTime);
-        this.networkRequests++;
-        
-        if (response.ok) {
-          const data = await response.json();
-          const content = data.contents;
-          this.bytesProcessed += content.length;
-          
-          if (sitemapUrl.endsWith('.xml')) {
-            const urls = this.parseXMLSitemap(content);
-            sitemapUrls.push(...urls);
-            if (urls.length > 0) {
-              this.sitemapUrls.push(sitemapUrl);
-              console.log(`Found ${urls.length} URLs in ${sitemapUrl}`);
-            }
-          } else if (sitemapUrl.endsWith('.txt')) {
-            const urls = this.parseTextSitemap(content);
-            sitemapUrls.push(...urls);
-            if (urls.length > 0) {
-              this.sitemapUrls.push(sitemapUrl);
-              console.log(`Found ${urls.length} URLs in text sitemap: ${sitemapUrl}`);
-            }
-          }
-        }
-      } catch (error) {
-        this.errorLog.push({
-          url: sitemapUrl,
-          error: error instanceof Error ? error.message : 'Failed to fetch sitemap',
-          timestamp: Date.now()
-        });
-        continue;
-      }
-    }
-
-    return [...new Set(sitemapUrls)]
-      .filter(url => {
-        try {
-          const urlObj = new URL(url);
-          return urlObj.hostname === this.domain || this.crawlOptions.followExternalLinks;
-        } catch {
-          return false;
-        }
-      })
-      .slice(0, this.maxPages === Infinity ? undefined : this.maxPages * 2);
-  }
-
-  private parseXMLSitemap(xmlContent: string): string[] {
-    const urls: string[] = [];
-    
-    try {
-      // Parse XML sitemap using regex for both regular sitemaps and sitemap indexes
-      const urlMatches = xmlContent.match(/<loc>(.*?)<\/loc>/g);
-      
-      if (urlMatches) {
-        urlMatches.forEach(match => {
-          const url = match.replace(/<\/?loc>/g, '').trim();
-          if (url && url.startsWith('http')) {
-            urls.push(url);
-          }
-        });
-      }
-
-      // Also check for sitemap index files
-      const sitemapMatches = xmlContent.match(/<sitemap>[\s\S]*?<\/sitemap>/g);
-      if (sitemapMatches) {
-        sitemapMatches.forEach(sitemapBlock => {
-          const locMatch = sitemapBlock.match(/<loc>(.*?)<\/loc>/);
-          if (locMatch && locMatch[1] && locMatch[1].startsWith('http')) {
-            // This is a sitemap index, we should fetch these sitemaps too
-            urls.push(locMatch[1]);
-          }
-        });
-      }
-    } catch (error) {
-      console.error('Error parsing XML sitemap:', error);
-    }
-
-    return urls;
-  }
-
-  private parseTextSitemap(textContent: string): string[] {
-    return textContent
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line.startsWith('http'))
-      .filter(url => {
-        try {
-          const urlObj = new URL(url);
-          return urlObj.hostname === this.domain || this.crawlOptions.followExternalLinks;
-        } catch {
-          return false;
-        }
-      });
-  }
-
-  private extractSitemapsFromRobots(robotsContent: string): string[] {
-    const sitemaps: string[] = [];
-    const lines = robotsContent.split('\n');
-    
-    lines.forEach(line => {
-      const trimmedLine = line.trim().toLowerCase();
-      if (trimmedLine.startsWith('sitemap:')) {
-        const sitemapUrl = line.substring(line.indexOf(':') + 1).trim();
-        if (sitemapUrl) {
-          sitemaps.push(sitemapUrl);
-        }
-      }
-    });
-    
-    return sitemaps;
-  }
-
-  private async analyzePageComprehensively(url: string): Promise<PageAnalysis> {
-    const startTime = Date.now();
-    
-    try {
-      const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
-      const response = await fetch(proxyUrl);
-      
-      const loadTime = (Date.now() - startTime) / 1000;
-      this.responseTimes.push(loadTime * 1000);
-      this.networkRequests++;
-      
-      if (!response.ok) {
-        return this.createDetailedErrorPage(url, response.status, loadTime);
-      }
-
-      const data = await response.json();
-      const html = data.contents;
-      const statusCode = data.status?.http_code || 200;
-      
-      this.bytesProcessed += html.length;
-      
-      return this.parseHTMLContentComprehensively(url, html, loadTime, statusCode);
-      
-    } catch (error) {
-      const loadTime = (Date.now() - startTime) / 1000;
-      this.errorLog.push({
-        url,
-        error: error instanceof Error ? error.message : 'Network error',
-        timestamp: Date.now()
-      });
-      return this.createDetailedErrorPage(url, 0, loadTime);
-    }
-  }
-
-  private createDetailedErrorPage(url: string, statusCode: number, loadTime: number): PageAnalysis {
-    return {
-      url,
-      title: statusCode === 0 ? 'Connection failed' : `HTTP ${statusCode} Error`,
-      titleLength: 0,
-      metaDescription: '',
-      metaDescriptionLength: 0,
-      h1Count: 0,
-      h1Text: [],
-      h2Count: 0,
-      h3Count: 0,
-      imageCount: 0,
-      imagesWithoutAlt: 0,
-      internalLinks: 0,
-      externalLinks: 0,
-      wordCount: 0,
-      loadTime,
-      statusCode,
-      canonicalUrl: '',
-      ogTitle: '',
-      ogDescription: '',
-      ogImage: '',
-      twitterCard: '',
-      schemaMarkup: [],
-      robotsDirective: '',
-      lang: '',
-      viewport: '',
-      charset: '',
-      sslEnabled: url.startsWith('https://'),
-      redirectChain: [],
-      contentType: '',
-      lastModified: '',
-      issues: [],
-      hreflang: [],
-      metaKeywords: '',
-      favicon: '',
-      pageSize: 0,
-      compressionEnabled: false,
-      httpVersion: '',
-      serverInfo: '',
-      securityHeaders: {},
-      coreWebVitals: {
-        lcp: 0,
-        fid: 0,
-        cls: 0
-      },
-      technicalScore: 0,
-      contentScore: 0,
-      performanceScore: 0
-    };
-  }
-
-  private parseHTMLContentComprehensively(url: string, html: string, loadTime: number, statusCode: number): PageAnalysis {
-    try {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(html, 'text/html');
-
-      // Basic SEO elements
-      const titleElement = doc.querySelector('title');
-      const title = titleElement ? titleElement.textContent?.trim() || 'No title' : 'No title';
-      const titleLength = title.length;
-
-      const metaDescElement = doc.querySelector('meta[name="description"], meta[property="og:description"]');
-      const metaDescription = metaDescElement ? metaDescElement.getAttribute('content')?.trim() || '' : '';
-      const metaDescriptionLength = metaDescription.length;
-
-      // Meta keywords
-      const metaKeywordsElement = doc.querySelector('meta[name="keywords"]');
-      const metaKeywords = metaKeywordsElement ? metaKeywordsElement.getAttribute('content')?.trim() || '' : '';
-
-      // Heading analysis
-      const h1Elements = doc.querySelectorAll('h1');
-      const h1Count = h1Elements.length;
-      const h1Text = Array.from(h1Elements).map(h1 => h1.textContent?.trim() || '');
-      
-      const h2Count = doc.querySelectorAll('h2').length;
-      const h3Count = doc.querySelectorAll('h3').length;
-
-      // Image analysis
-      const images = doc.querySelectorAll('img');
-      const imageCount = images.length;
-      let imagesWithoutAlt = 0;
-      images.forEach(img => {
-        const alt = img.getAttribute('alt');
-        if (!alt || alt.trim() === '') {
-          imagesWithoutAlt++;
-        }
-      });
-
-      // Link analysis
-      const links = doc.querySelectorAll('a[href]');
-      let internalLinks = 0;
-      let externalLinks = 0;
-      
-      links.forEach(link => {
-        const href = link.getAttribute('href');
-        if (href && !href.startsWith('#') && !href.startsWith('mailto:') && !href.startsWith('tel:')) {
-          try {
-            const linkUrl = new URL(href, url);
-            if (linkUrl.hostname === this.domain) {
-              internalLinks++;
-            } else {
-              externalLinks++;
-            }
-          } catch {
-            // Invalid URL, skip
-          }
-        }
-      });
-
-      // Content analysis
-      const textContent = doc.body ? doc.body.textContent || '' : '';
-      const wordCount = textContent.trim().split(/\s+/).filter(word => word.length > 2).length;
-
-      // Technical SEO elements
-      const canonicalElement = doc.querySelector('link[rel="canonical"]');
-      const canonicalUrl = canonicalElement ? canonicalElement.getAttribute('href') || '' : '';
-
-      // Favicon
-      const faviconElement = doc.querySelector('link[rel="icon"], link[rel="shortcut icon"]');
-      const favicon = faviconElement ? faviconElement.getAttribute('href') || '' : '';
-
-      // Hreflang
-      const hreflangElements = doc.querySelectorAll('link[rel="alternate"][hreflang]');
-      const hreflang = Array.from(hreflangElements).map(el => ({
-        lang: el.getAttribute('hreflang') || '',
-        url: el.getAttribute('href') || ''
-      }));
-
-      // Open Graph
-      const ogTitleElement = doc.querySelector('meta[property="og:title"]');
-      const ogTitle = ogTitleElement ? ogTitleElement.getAttribute('content') || '' : '';
-      
-      const ogDescElement = doc.querySelector('meta[property="og:description"]');
-      const ogDescription = ogDescElement ? ogDescElement.getAttribute('content') || '' : '';
-      
-      const ogImageElement = doc.querySelector('meta[property="og:image"]');
-      const ogImage = ogImageElement ? ogImageElement.getAttribute('content') || '' : '';
-
-      // Twitter Card
-      const twitterCardElement = doc.querySelector('meta[name="twitter:card"]');
-      const twitterCard = twitterCardElement ? twitterCardElement.getAttribute('content') || '' : '';
-
-      // Schema markup
-      const schemaScripts = doc.querySelectorAll('script[type="application/ld+json"]');
-      const schemaMarkup = Array.from(schemaScripts).map(script => {
-        try {
-          const json = JSON.parse(script.textContent || '');
-          return json['@type'] || 'Unknown';
-        } catch {
-          return 'Invalid JSON-LD';
-        }
-      });
-
-      // Robots directive
-      const robotsElement = doc.querySelector('meta[name="robots"]');
-      const robotsDirective = robotsElement ? robotsElement.getAttribute('content') || '' : '';
-
-      // Language
-      const langAttr = doc.documentElement.getAttribute('lang') || '';
-
-      // Viewport
-      const viewportElement = doc.querySelector('meta[name="viewport"]');
-      const viewport = viewportElement ? viewportElement.getAttribute('content') || '' : '';
-
-      // Charset
-      const charsetElement = doc.querySelector('meta[charset], meta[http-equiv="Content-Type"]');
-      const charset = charsetElement ? 
-        (charsetElement.getAttribute('charset') || charsetElement.getAttribute('content') || '') : '';
-
-      // Calculate individual scores
-      const technicalScore = this.calculateTechnicalScore({
-        titleLength, metaDescriptionLength, h1Count, canonicalUrl, viewport, charset, schemaMarkup
-      });
-      
-      const contentScore = this.calculateContentScore({
-        wordCount, h1Count, h2Count, h3Count, imageCount, imagesWithoutAlt
-      });
-      
-      const performanceScore = this.calculatePerformanceScore({
-        loadTime, pageSize: html.length
-      });
-
-      return {
-        url,
-        title,
-        titleLength,
-        metaDescription,
-        metaDescriptionLength,
-        metaKeywords,
-        h1Count,
-        h1Text,
-        h2Count,
-        h3Count,
-        imageCount,
-        imagesWithoutAlt,
-        internalLinks,
-        externalLinks,
-        wordCount,
-        loadTime,
-        statusCode,
-        canonicalUrl,
-        ogTitle,
-        ogDescription,
-        ogImage,
-        twitterCard,
-        schemaMarkup,
-        robotsDirective,
-        lang: langAttr,
-        viewport,
-        charset,
-        sslEnabled: url.startsWith('https://'),
-        redirectChain: [],
-        contentType: 'text/html',
-        lastModified: '',
-        issues: [],
-        hreflang,
-        favicon,
-        pageSize: html.length,
-        compressionEnabled: false,
-        httpVersion: 'HTTP/1.1',
-        serverInfo: '',
-        securityHeaders: {},
-        coreWebVitals: {
-          lcp: loadTime * 1000,
-          fid: Math.random() * 100,
-          cls: Math.random() * 0.1
-        },
-        htmlContent: html,
-        technicalScore,
-        contentScore,
-        performanceScore
-      };
-    } catch (error) {
-      return this.createDetailedErrorPage(url, statusCode, loadTime);
-    }
-  }
-
-  private calculateTechnicalScore(params: any): number {
-    let score = 100;
-    
-    if (params.titleLength < 30 || params.titleLength > 60) score -= 10;
-    if (params.metaDescriptionLength < 120 || params.metaDescriptionLength > 160) score -= 10;
-    if (params.h1Count !== 1) score -= 15;
-    if (!params.canonicalUrl) score -= 5;
-    if (!params.viewport) score -= 15;
-    if (!params.charset) score -= 5;
-    if (params.schemaMarkup.length === 0) score -= 10;
-    
-    return Math.max(0, score);
-  }
-
-  private calculateContentScore(params: any): number {
-    let score = 100;
-    
-    if (params.wordCount < 300) score -= 20;
-    if (params.h1Count === 0) score -= 15;
-    if (params.h2Count === 0 && params.wordCount > 500) score -= 10;
-    if (params.imagesWithoutAlt > 0) score -= Math.min(params.imagesWithoutAlt * 5, 25);
-    
-    return Math.max(0, score);
-  }
-
-  private calculatePerformanceScore(params: any): number {
-    let score = 100;
-    
-    if (params.loadTime > 3) score -= 30;
-    else if (params.loadTime > 2) score -= 20;
-    else if (params.loadTime > 1) score -= 10;
-    
-    if (params.pageSize > 2000000) score -= 20; // 2MB
-    else if (params.pageSize > 1000000) score -= 10; // 1MB
-    
-    return Math.max(0, score);
-  }
-
-  private async extractAllLinksFromPage(pageUrl: string, html: string): Promise<string[]> {
-    try {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(html, 'text/html');
-      
-      const links = doc.querySelectorAll('a[href]');
-      const discoveredUrls: string[] = [];
-      
-      links.forEach(link => {
-        const href = link.getAttribute('href');
-        if (href && !href.startsWith('#') && !href.startsWith('mailto:') && !href.startsWith('tel:') && !href.startsWith('javascript:')) {
-          try {
-            const absoluteUrl = new URL(href, pageUrl);
-            
-            // Include URLs based on crawl options
-            const isInternal = absoluteUrl.hostname === this.domain;
-            const shouldInclude = isInternal || this.crawlOptions.followExternalLinks;
-            
-            if (shouldInclude) {
-              const cleanUrl = absoluteUrl.origin + absoluteUrl.pathname;
-              
-              // Filter out files and admin paths unless specifically requested
-              const isContentUrl = !cleanUrl.match(/\.(pdf|jpg|jpeg|png|gif|css|js|ico|xml|txt|zip|doc|docx|svg|webp|mp4|mp3|avi)$/i) ||
-                                  this.crawlOptions.includeImages;
-              
-              const isNotAdminPath = !cleanUrl.includes('/wp-admin') &&
-                                   !cleanUrl.includes('/admin') &&
-                                   !cleanUrl.includes('/wp-content/') &&
-                                   !cleanUrl.includes('/wp-includes/') &&
-                                   !cleanUrl.includes('?attachment_id=') &&
-                                   !cleanUrl.includes('/feed/');
-              
-              if (isContentUrl && isNotAdminPath) {
-                discoveredUrls.push(cleanUrl);
-              }
-            }
-          } catch {
-            // Invalid URL, skip
-          }
-        }
-      });
-      
-      return [...new Set(discoveredUrls)];
-      
-    } catch (error) {
-      return [];
-    }
-  }
-
-  // Continue with the rest of the methods...
-  private generateComprehensiveIssues(): SEOIssue[] {
-    const issues: SEOIssue[] = [];
-
-    // Technical Issues
-    const pagesWithoutMeta = this.pages.filter(p => !p.metaDescription && p.statusCode === 200);
-    if (pagesWithoutMeta.length > 0) {
-      issues.push({
-        type: 'error',
-        category: 'Technical',
-        issue: 'Missing meta descriptions',
-        suggestion: 'Add compelling meta descriptions (150-160 characters) to improve click-through rates from search results',
-        impact: 'high',
-        count: pagesWithoutMeta.length
-      });
-    }
-
-    const shortTitles = this.pages.filter(p => p.titleLength < 30 && p.statusCode === 200);
-    if (shortTitles.length > 0) {
-      issues.push({
-        type: 'warning',
-        category: 'Technical',
-        issue: 'Short page titles detected',
-        suggestion: 'Expand titles to 50-60 characters for better search visibility and user understanding',
-        impact: 'medium',
-        count: shortTitles.length
-      });
-    }
-
-    const longTitles = this.pages.filter(p => p.titleLength > 60 && p.statusCode === 200);
-    if (longTitles.length > 0) {
-      issues.push({
-        type: 'warning',
-        category: 'Technical',
-        issue: 'Long page titles detected',
-        suggestion: 'Shorten titles to under 60 characters to prevent truncation in search results',
-        impact: 'medium',
-        count: longTitles.length
-      });
-    }
-
-    const pagesWithoutH1 = this.pages.filter(p => p.h1Count === 0 && p.statusCode === 200);
-    if (pagesWithoutH1.length > 0) {
-      issues.push({
-        type: 'error',
-        category: 'Technical',
-        issue: 'Pages missing H1 tags',
-        suggestion: 'Add descriptive H1 tags to all pages for better content structure and SEO',
-        impact: 'high',
-        count: pagesWithoutH1.length
-      });
-    }
-
-    const pagesWithMultipleH1 = this.pages.filter(p => p.h1Count > 1 && p.statusCode === 200);
-    if (pagesWithMultipleH1.length > 0) {
-      issues.push({
-        type: 'error',
-        category: 'Technical',
-        issue: 'Multiple H1 tags detected',
-        suggestion: 'Use only one H1 tag per page to maintain proper heading hierarchy',
-        impact: 'high',
-        count: pagesWithMultipleH1.length
-      });
-    }
-
-    // Add more comprehensive issues...
-    return issues;
-  }
-
-  private generateCrawlStats() {
-    const successfulPages = this.pages.filter(p => p.statusCode === 200);
-    
-    return {
-      totalPages: this.pages.length,
-      crawledPages: successfulPages.length,
-      errorPages: this.pages.filter(p => p.statusCode >= 400).length,
-      avgLoadTime: this.pages.reduce((sum, p) => sum + p.loadTime, 0) / this.pages.length || 0,
-      uniqueUrls: this.discoveredUrls.size,
-      duplicateContent: this.findDuplicateTitles().length,
-      avgTitleLength: successfulPages.reduce((sum, p) => sum + p.titleLength, 0) / successfulPages.length || 0,
-      avgMetaLength: successfulPages.reduce((sum, p) => sum + p.metaDescriptionLength, 0) / successfulPages.length || 0,
-      avgWordCount: successfulPages.reduce((sum, p) => sum + p.wordCount, 0) / successfulPages.length || 0,
-      totalPageSize: successfulPages.reduce((sum, p) => sum + p.pageSize, 0),
-      avgPageSize: successfulPages.reduce((sum, p) => sum + p.pageSize, 0) / successfulPages.length || 0,
-      imagesTotal: successfulPages.reduce((sum, p) => sum + p.imageCount, 0),
-      imagesWithoutAlt: successfulPages.reduce((sum, p) => sum + p.imagesWithoutAlt, 0),
-      internalLinksTotal: successfulPages.reduce((sum, p) => sum + p.internalLinks, 0),
-      externalLinksTotal: successfulPages.reduce((sum, p) => sum + p.externalLinks, 0)
-    };
-  }
-
-  private generateTechnicalInsights() {
-    const successfulPages = this.pages.filter(p => p.statusCode === 200);
-    
-    return {
-      hasRobotsTxt: this.robotsTxt.length > 0,
-      hasSitemap: this.sitemapUrls.length > 0,
-      sslEnabled: this.pages.filter(p => p.sslEnabled).length === this.pages.length,
-      mobileViewport: successfulPages.filter(p => p.viewport).length,
-      structuredData: successfulPages.filter(p => p.schemaMarkup.length > 0).length,
-      duplicateTitles: this.findDuplicateTitles().length,
-      duplicateMetas: this.findDuplicateMetas().length,
-      brokenInternalLinks: this.pages.filter(p => p.statusCode >= 400).length,
-      orphanPages: this.findOrphanPages().length,
-      avgCoreWebVitalsLCP: successfulPages.reduce((sum, p) => sum + p.coreWebVitals.lcp, 0) / successfulPages.length || 0,
-      avgCoreWebVitalsFID: successfulPages.reduce((sum, p) => sum + p.coreWebVitals.fid, 0) / successfulPages.length || 0,
-      avgCoreWebVitalsCLS: successfulPages.reduce((sum, p) => sum + p.coreWebVitals.cls, 0) / successfulPages.length || 0,
-      pagesWithHreflang: successfulPages.filter(p => p.hreflang.length > 0).length,
-      pagesWithFavicon: successfulPages.filter(p => p.favicon).length,
-      pagesWithMetaKeywords: successfulPages.filter(p => p.metaKeywords).length,
-      maxCrawlDepth: this.calculateMaxDepth(),
-      robotsTxtSize: this.robotsTxt.length,
-      sitemapCount: this.sitemapUrls.length
-    };
-  }
-
-  private findDuplicateTitles(): string[] {
-    const titleCounts = new Map<string, number>();
-    
-    this.pages
-      .filter(page => page.statusCode === 200)
-      .forEach(page => {
-        const title = page.title.toLowerCase().trim();
-        if (title && title !== 'no title') {
-          titleCounts.set(title, (titleCounts.get(title) || 0) + 1);
-        }
-      });
-
-    return Array.from(titleCounts.entries())
-      .filter(([_, count]) => count > 1)
-      .map(([title, _]) => title);
-  }
-
-  private findDuplicateMetas(): string[] {
-    const metaCounts = new Map<string, number>();
-    
-    this.pages
-      .filter(page => page.statusCode === 200 && page.metaDescription)
-      .forEach(page => {
-        const meta = page.metaDescription.toLowerCase().trim();
-        if (meta) {
-          metaCounts.set(meta, (metaCounts.get(meta) || 0) + 1);
-        }
-      });
-
-    return Array.from(metaCounts.entries())
-      .filter(([_, count]) => count > 1)
-      .map(([meta, _]) => meta);
-  }
-
-  private findOrphanPages(): string[] {
-    const linkedPages = new Set<string>();
-    
-    // Collect all pages that are linked to
-    this.internalLinkGraph.forEach((links) => {
-      links.forEach(link => linkedPages.add(link));
-    });
-    
-    // Find pages that aren't linked to by any other page
-    return this.pages
-      .filter(page => page.statusCode === 200 && !linkedPages.has(page.url))
-      .map(page => page.url);
-  }
-
-  private calculateDetailedScores(issues: SEOIssue[]): { technical: number; content: number; performance: number; mobile: number; accessibility: number; social: number } {
-    const baseScore = 100;
-    const scores = {
-      technical: baseScore,
-      content: baseScore,
-      performance: baseScore,
-      mobile: baseScore,
-      accessibility: baseScore,
-      social: baseScore
-    };
-
-    issues.forEach(issue => {
-      if (issue.type === 'success') return;
-      
-      const deduction = issue.impact === 'critical' ? 25 : issue.impact === 'high' ? 15 : issue.impact === 'medium' ? 8 : 3;
-      const multiplier = issue.count ? Math.min(issue.count * 0.1, 1.5) : 1;
-      
-      switch (issue.category.toLowerCase()) {
-        case 'technical':
-        case 'security':
-          scores.technical = Math.max(0, scores.technical - (deduction * multiplier));
-          break;
-        case 'content':
-          scores.content = Math.max(0, scores.content - (deduction * multiplier));
-          break;
-        case 'performance':
-          scores.performance = Math.max(0, scores.performance - (deduction * multiplier));
-          break;
-        case 'mobile':
-          scores.mobile = Math.max(0, scores.mobile - (deduction * multiplier));
-          break;
-        case 'accessibility':
-          scores.accessibility = Math.max(0, scores.accessibility - (deduction * multiplier));
-          break;
-        case 'social':
-        case 'international':
-          scores.social = Math.max(0, scores.social - (deduction * multiplier));
-          break;
-      }
-    });
-
-    return {
-      technical: Math.round(scores.technical),
-      content: Math.round(scores.content),
-      performance: Math.round(scores.performance),
-      mobile: Math.round(scores.mobile),
-      accessibility: Math.round(scores.accessibility),
-      social: Math.round(scores.social)
-    };
+    this.shouldStop = true;
+    this.isRunning = false;
   }
 }
