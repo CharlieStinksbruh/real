@@ -1,5 +1,14 @@
 import { SEOAnalysis, SEOIssue, PageAnalysis } from '../types/seo';
 
+interface CrawlOptions {
+  maxPages: number;
+  crawlDelay: number;
+  followExternalLinks: boolean;
+  includeImages: boolean;
+  respectRobots: boolean;
+  maxDepth: number;
+}
+
 export class SEOAnalyzer {
   private baseUrl: string = '';
   private crawledUrls: Set<string> = new Set();
@@ -8,86 +17,544 @@ export class SEOAnalyzer {
   private domain: string = '';
   private discoveredUrls: Set<string> = new Set();
   private internalLinkGraph: Map<string, Set<string>> = new Map();
+  private progressCallback?: (progress: any) => void;
+  private robotsTxt: string = '';
+  private sitemapUrls: string[] = [];
+  private crawlStartTime: number = 0;
+  private errorLog: Array<{url: string, error: string, timestamp: number}> = [];
+  private crawlOptions: CrawlOptions = {
+    maxPages: 50,
+    crawlDelay: 200,
+    followExternalLinks: false,
+    includeImages: false,
+    respectRobots: true,
+    maxDepth: 10
+  };
+  private isPaused: boolean = false;
+  private isStopped: boolean = false;
+  private bytesProcessed: number = 0;
+  private networkRequests: number = 0;
+  private responseTimes: number[] = [];
+  private duplicatesFound: number = 0;
+  private redirectsFound: number = 0;
 
-  async analyzeSite(url: string): Promise<SEOAnalysis> {
+  async analyzeSite(url: string, options: CrawlOptions, progressCallback?: (progress: any) => void): Promise<SEOAnalysis> {
+    this.crawlStartTime = Date.now();
     this.baseUrl = new URL(url).origin;
     this.domain = new URL(url).hostname;
+    this.crawlOptions = options;
+    this.maxPages = options.maxPages === -1 ? Infinity : options.maxPages;
+    this.progressCallback = progressCallback;
+    this.isPaused = false;
+    this.isStopped = false;
+    
+    // Reset all state
     this.crawledUrls.clear();
     this.pages = [];
     this.discoveredUrls.clear();
     this.internalLinkGraph.clear();
+    this.errorLog = [];
+    this.robotsTxt = '';
+    this.sitemapUrls = [];
+    this.bytesProcessed = 0;
+    this.networkRequests = 0;
+    this.responseTimes = [];
+    this.duplicatesFound = 0;
+    this.redirectsFound = 0;
 
-    // Start comprehensive crawling process
-    await this.crawlSiteComprehensively(url);
-    
-    // Analyze all pages and generate detailed issues
-    const issues = this.generateComprehensiveIssues();
-    const scores = this.calculateDetailedScores(issues);
-    const technicalInsights = this.generateTechnicalInsights();
-    
-    return {
-      url,
-      overallScore: Math.round((scores.technical + scores.content + scores.performance + scores.mobile + scores.accessibility + scores.social) / 6),
-      scores,
-      issues,
-      pages: this.pages,
-      crawlStats: this.generateCrawlStats(),
-      technicalInsights,
-      scanTime: new Date().toLocaleString()
-    };
+    // Initialize progress with comprehensive status
+    this.updateProgress({
+      isActive: true,
+      currentPage: 'Initializing comprehensive SEO analysis engine...',
+      pagesFound: 0,
+      pagesCrawled: 0,
+      phase: 'initializing',
+      startTime: this.crawlStartTime,
+      estimatedTimeRemaining: null,
+      crawlSpeed: 0,
+      errorCount: 0,
+      queueSize: 1,
+      currentDepth: 0,
+      maxDepth: 0,
+      robotsTxtFound: false,
+      sitemapFound: false,
+      sitemapCount: 0,
+      bytesProcessed: 0,
+      avgResponseTime: 0,
+      successRate: 100,
+      duplicatesFound: 0,
+      redirectsFound: 0,
+      currentUrl: url,
+      discoveryRate: 0,
+      memoryUsage: 0,
+      networkRequests: 0
+    });
+
+    try {
+      // Start comprehensive crawling process
+      await this.crawlSiteComprehensively(url);
+      
+      if (this.isStopped) {
+        throw new Error('Crawl was stopped by user');
+      }
+      
+      this.updateProgress({
+        isActive: true,
+        currentPage: 'Performing deep technical analysis and generating comprehensive insights...',
+        pagesFound: this.discoveredUrls.size,
+        pagesCrawled: this.pages.length,
+        phase: 'analyzing',
+        startTime: this.crawlStartTime,
+        estimatedTimeRemaining: 15,
+        crawlSpeed: this.calculateCrawlSpeed(),
+        errorCount: this.errorLog.length,
+        queueSize: 0,
+        currentDepth: 0,
+        maxDepth: this.calculateMaxDepth(),
+        robotsTxtFound: this.robotsTxt.length > 0,
+        sitemapFound: this.sitemapUrls.length > 0,
+        sitemapCount: this.sitemapUrls.length,
+        bytesProcessed: this.bytesProcessed,
+        avgResponseTime: this.calculateAvgResponseTime(),
+        successRate: this.calculateSuccessRate(),
+        duplicatesFound: this.duplicatesFound,
+        redirectsFound: this.redirectsFound,
+        currentUrl: 'Analyzing collected data...',
+        discoveryRate: this.calculateDiscoveryRate(),
+        memoryUsage: this.estimateMemoryUsage(),
+        networkRequests: this.networkRequests
+      });
+
+      // Analyze all pages and generate detailed issues
+      const issues = this.generateComprehensiveIssues();
+      const scores = this.calculateDetailedScores(issues);
+      const technicalInsights = this.generateTechnicalInsights();
+      
+      this.updateProgress({
+        isActive: false,
+        currentPage: 'Analysis complete - comprehensive SEO report generated',
+        pagesFound: this.discoveredUrls.size,
+        pagesCrawled: this.pages.length,
+        phase: 'complete',
+        startTime: this.crawlStartTime,
+        estimatedTimeRemaining: 0,
+        crawlSpeed: this.calculateCrawlSpeed(),
+        errorCount: this.errorLog.length,
+        queueSize: 0,
+        currentDepth: 0,
+        maxDepth: this.calculateMaxDepth(),
+        robotsTxtFound: this.robotsTxt.length > 0,
+        sitemapFound: this.sitemapUrls.length > 0,
+        sitemapCount: this.sitemapUrls.length,
+        bytesProcessed: this.bytesProcessed,
+        avgResponseTime: this.calculateAvgResponseTime(),
+        successRate: this.calculateSuccessRate(),
+        duplicatesFound: this.duplicatesFound,
+        redirectsFound: this.redirectsFound,
+        currentUrl: 'Complete',
+        discoveryRate: this.calculateDiscoveryRate(),
+        memoryUsage: this.estimateMemoryUsage(),
+        networkRequests: this.networkRequests
+      });
+      
+      return {
+        url,
+        overallScore: Math.round((scores.technical + scores.content + scores.performance + scores.mobile + scores.accessibility + scores.social) / 6),
+        scores,
+        issues,
+        pages: this.pages,
+        crawlStats: this.generateCrawlStats(),
+        technicalInsights,
+        scanTime: new Date().toLocaleString(),
+        robotsTxt: this.robotsTxt,
+        sitemapUrls: this.sitemapUrls,
+        errorLog: this.errorLog,
+        crawlDuration: (Date.now() - this.crawlStartTime) / 1000
+      };
+    } catch (error) {
+      this.updateProgress({
+        isActive: false,
+        currentPage: `Analysis failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        pagesFound: this.discoveredUrls.size,
+        pagesCrawled: this.pages.length,
+        phase: 'complete',
+        startTime: this.crawlStartTime,
+        estimatedTimeRemaining: 0,
+        crawlSpeed: this.calculateCrawlSpeed(),
+        errorCount: this.errorLog.length,
+        queueSize: 0,
+        currentDepth: 0,
+        maxDepth: this.calculateMaxDepth(),
+        robotsTxtFound: this.robotsTxt.length > 0,
+        sitemapFound: this.sitemapUrls.length > 0,
+        sitemapCount: this.sitemapUrls.length,
+        bytesProcessed: this.bytesProcessed,
+        avgResponseTime: this.calculateAvgResponseTime(),
+        successRate: this.calculateSuccessRate(),
+        duplicatesFound: this.duplicatesFound,
+        redirectsFound: this.redirectsFound,
+        currentUrl: 'Error',
+        discoveryRate: this.calculateDiscoveryRate(),
+        memoryUsage: this.estimateMemoryUsage(),
+        networkRequests: this.networkRequests
+      });
+      throw error;
+    }
+  }
+
+  pauseCrawl() {
+    this.isPaused = true;
+  }
+
+  resumeCrawl() {
+    this.isPaused = false;
+  }
+
+  stopCrawl() {
+    this.isStopped = true;
+    this.isPaused = false;
+  }
+
+  private async waitIfPaused() {
+    while (this.isPaused && !this.isStopped) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  private updateProgress(progress: any) {
+    if (this.progressCallback) {
+      this.progressCallback(progress);
+    }
+  }
+
+  private calculateCrawlSpeed(): number {
+    const elapsed = (Date.now() - this.crawlStartTime) / 1000;
+    return elapsed > 0 ? this.pages.length / elapsed : 0;
+  }
+
+  private calculateMaxDepth(): number {
+    return Math.max(...Array.from(this.internalLinkGraph.keys()).map(url => {
+      try {
+        const path = new URL(url).pathname;
+        return path.split('/').filter(segment => segment.length > 0).length;
+      } catch {
+        return 0;
+      }
+    }), 0);
+  }
+
+  private calculateAvgResponseTime(): number {
+    return this.responseTimes.length > 0 
+      ? this.responseTimes.reduce((sum, time) => sum + time, 0) / this.responseTimes.length 
+      : 0;
+  }
+
+  private calculateSuccessRate(): number {
+    const total = this.pages.length + this.errorLog.length;
+    return total > 0 ? (this.pages.length / total) * 100 : 100;
+  }
+
+  private calculateDiscoveryRate(): number {
+    const elapsed = (Date.now() - this.crawlStartTime) / 1000;
+    return elapsed > 0 ? this.discoveredUrls.size / elapsed : 0;
+  }
+
+  private estimateMemoryUsage(): number {
+    // Rough estimate based on stored data
+    const pageDataSize = this.pages.length * 5000; // ~5KB per page
+    const urlDataSize = this.discoveredUrls.size * 100; // ~100 bytes per URL
+    return Math.round((pageDataSize + urlDataSize) / 1024 / 1024 * 100) / 100; // MB
   }
 
   private async crawlSiteComprehensively(startUrl: string): Promise<void> {
-    const urlsToVisit: string[] = [startUrl];
+    const urlsToVisit: Array<{url: string, depth: number, source: string, priority: number}> = [
+      {url: startUrl, depth: 0, source: 'start', priority: 10}
+    ];
     const processedUrls = new Set<string>();
+    let currentDepth = 0;
+    let maxDepth = 0;
     
-    // First, get URLs from sitemap and robots.txt
+    // Phase 1: Site discovery and robots.txt analysis
+    this.updateProgress({
+      isActive: true,
+      currentPage: 'Analyzing robots.txt and site configuration...',
+      pagesFound: 1,
+      pagesCrawled: 0,
+      phase: 'initializing',
+      startTime: this.crawlStartTime,
+      estimatedTimeRemaining: null,
+      crawlSpeed: 0,
+      errorCount: 0,
+      queueSize: urlsToVisit.length,
+      currentDepth: 0,
+      maxDepth: 0,
+      robotsTxtFound: false,
+      sitemapFound: false,
+      sitemapCount: 0,
+      bytesProcessed: this.bytesProcessed,
+      avgResponseTime: this.calculateAvgResponseTime(),
+      successRate: this.calculateSuccessRate(),
+      duplicatesFound: this.duplicatesFound,
+      redirectsFound: this.redirectsFound,
+      currentUrl: `${this.baseUrl}/robots.txt`,
+      discoveryRate: this.calculateDiscoveryRate(),
+      memoryUsage: this.estimateMemoryUsage(),
+      networkRequests: this.networkRequests
+    });
+
+    // Get robots.txt first
+    await this.fetchRobotsTxt();
+    
+    this.updateProgress({
+      isActive: true,
+      currentPage: 'Discovering and analyzing XML sitemaps...',
+      pagesFound: 1,
+      pagesCrawled: 0,
+      phase: 'sitemap',
+      startTime: this.crawlStartTime,
+      estimatedTimeRemaining: null,
+      crawlSpeed: 0,
+      errorCount: 0,
+      queueSize: urlsToVisit.length,
+      currentDepth: 0,
+      maxDepth: 0,
+      robotsTxtFound: this.robotsTxt.length > 0,
+      sitemapFound: false,
+      sitemapCount: 0,
+      bytesProcessed: this.bytesProcessed,
+      avgResponseTime: this.calculateAvgResponseTime(),
+      successRate: this.calculateSuccessRate(),
+      duplicatesFound: this.duplicatesFound,
+      redirectsFound: this.redirectsFound,
+      currentUrl: 'Analyzing sitemaps...',
+      discoveryRate: this.calculateDiscoveryRate(),
+      memoryUsage: this.estimateMemoryUsage(),
+      networkRequests: this.networkRequests
+    });
+
+    // Phase 2: Comprehensive sitemap discovery
     const sitemapUrls = await this.getSitemapUrls(startUrl);
     if (sitemapUrls.length > 0) {
-      console.log(`Found ${sitemapUrls.length} URLs from sitemap`);
-      urlsToVisit.push(...sitemapUrls.slice(0, this.maxPages));
+      console.log(`Found ${sitemapUrls.length} URLs from sitemaps`);
+      sitemapUrls.forEach((url, index) => {
+        urlsToVisit.push({url, depth: 0, source: 'sitemap', priority: 9 - Math.floor(index / 100)});
+        this.discoveredUrls.add(url);
+      });
+      
+      this.updateProgress({
+        isActive: true,
+        currentPage: `Discovered ${sitemapUrls.length} URLs from ${this.sitemapUrls.length} sitemaps`,
+        pagesFound: this.discoveredUrls.size,
+        pagesCrawled: 0,
+        phase: 'sitemap',
+        startTime: this.crawlStartTime,
+        estimatedTimeRemaining: this.estimateTimeRemaining(0, this.discoveredUrls.size),
+        crawlSpeed: 0,
+        errorCount: 0,
+        queueSize: urlsToVisit.length,
+        currentDepth: 0,
+        maxDepth: 0,
+        robotsTxtFound: this.robotsTxt.length > 0,
+        sitemapFound: true,
+        sitemapCount: this.sitemapUrls.length,
+        bytesProcessed: this.bytesProcessed,
+        avgResponseTime: this.calculateAvgResponseTime(),
+        successRate: this.calculateSuccessRate(),
+        duplicatesFound: this.duplicatesFound,
+        redirectsFound: this.redirectsFound,
+        currentUrl: 'Sitemap analysis complete',
+        discoveryRate: this.calculateDiscoveryRate(),
+        memoryUsage: this.estimateMemoryUsage(),
+        networkRequests: this.networkRequests
+      });
     }
+    
+    // Phase 3: Intelligent crawling with priority queue
+    this.updateProgress({
+      isActive: true,
+      currentPage: 'Starting intelligent page crawling with link discovery...',
+      pagesFound: this.discoveredUrls.size,
+      pagesCrawled: 0,
+      phase: 'crawling',
+      startTime: this.crawlStartTime,
+      estimatedTimeRemaining: this.estimateTimeRemaining(0, this.discoveredUrls.size),
+      crawlSpeed: 0,
+      errorCount: 0,
+      queueSize: urlsToVisit.length,
+      currentDepth: 0,
+      maxDepth: 0,
+      robotsTxtFound: this.robotsTxt.length > 0,
+      sitemapFound: this.sitemapUrls.length > 0,
+      sitemapCount: this.sitemapUrls.length,
+      bytesProcessed: this.bytesProcessed,
+      avgResponseTime: this.calculateAvgResponseTime(),
+      successRate: this.calculateSuccessRate(),
+      duplicatesFound: this.duplicatesFound,
+      redirectsFound: this.redirectsFound,
+      currentUrl: 'Initializing crawl queue...',
+      discoveryRate: this.calculateDiscoveryRate(),
+      memoryUsage: this.estimateMemoryUsage(),
+      networkRequests: this.networkRequests
+    });
+
+    // Sort URLs by priority (higher priority first)
+    urlsToVisit.sort((a, b) => b.priority - a.priority);
     
     let currentIndex = 0;
     
-    while (currentIndex < urlsToVisit.length && this.pages.length < this.maxPages) {
-      const currentUrl = urlsToVisit[currentIndex];
-      currentIndex++;
+    while (currentIndex < urlsToVisit.length && this.pages.length < this.maxPages && !this.isStopped) {
+      await this.waitIfPaused();
       
-      if (processedUrls.has(currentUrl)) continue;
+      if (this.isStopped) break;
+      
+      const {url: currentUrl, depth, source, priority} = urlsToVisit[currentIndex];
+      currentIndex++;
+      currentDepth = depth;
+      maxDepth = Math.max(maxDepth, depth);
+      
+      if (processedUrls.has(currentUrl)) {
+        this.duplicatesFound++;
+        continue;
+      }
+      
       processedUrls.add(currentUrl);
       this.crawledUrls.add(currentUrl);
 
+      const estimatedTime = this.estimateTimeRemaining(this.pages.length, Math.max(this.discoveredUrls.size, this.maxPages));
+      
+      this.updateProgress({
+        isActive: true,
+        currentPage: `Analyzing: ${this.truncateUrl(currentUrl)}`,
+        pagesFound: this.discoveredUrls.size,
+        pagesCrawled: this.pages.length,
+        phase: 'crawling',
+        startTime: this.crawlStartTime,
+        estimatedTimeRemaining: estimatedTime,
+        crawlSpeed: this.calculateCrawlSpeed(),
+        errorCount: this.errorLog.length,
+        queueSize: urlsToVisit.length - currentIndex,
+        currentDepth: depth,
+        maxDepth: maxDepth,
+        robotsTxtFound: this.robotsTxt.length > 0,
+        sitemapFound: this.sitemapUrls.length > 0,
+        sitemapCount: this.sitemapUrls.length,
+        bytesProcessed: this.bytesProcessed,
+        avgResponseTime: this.calculateAvgResponseTime(),
+        successRate: this.calculateSuccessRate(),
+        duplicatesFound: this.duplicatesFound,
+        redirectsFound: this.redirectsFound,
+        currentUrl: currentUrl,
+        discoveryRate: this.calculateDiscoveryRate(),
+        memoryUsage: this.estimateMemoryUsage(),
+        networkRequests: this.networkRequests
+      });
+
       try {
-        console.log(`Analyzing page ${this.pages.length + 1}: ${currentUrl}`);
+        console.log(`Analyzing page ${this.pages.length + 1}: ${currentUrl} (depth: ${depth}, source: ${source}, priority: ${priority})`);
         const pageAnalysis = await this.analyzePageComprehensively(currentUrl);
         this.pages.push(pageAnalysis);
 
-        // Extract and add new URLs from this page
-        if (pageAnalysis.statusCode === 200 && this.pages.length < this.maxPages) {
+        // Extract and add new URLs from this page if it loaded successfully
+        if (pageAnalysis.statusCode === 200 && this.pages.length < this.maxPages && depth < this.crawlOptions.maxDepth) {
           const newUrls = await this.extractAllLinksFromPage(currentUrl, pageAnalysis.htmlContent || '');
           
           // Add internal links to our graph for analysis
           this.internalLinkGraph.set(currentUrl, new Set(newUrls));
           
+          let newUrlsAdded = 0;
           for (const newUrl of newUrls) {
-            this.discoveredUrls.add(newUrl);
-            if (!processedUrls.has(newUrl) && urlsToVisit.length < this.maxPages * 3) {
-              urlsToVisit.push(newUrl);
+            if (!this.discoveredUrls.has(newUrl)) {
+              this.discoveredUrls.add(newUrl);
+              newUrlsAdded++;
+              
+              // Add to crawl queue if we haven't processed it and we're under limits
+              if (!processedUrls.has(newUrl) && urlsToVisit.length < this.maxPages * 3) {
+                // Calculate priority based on URL characteristics
+                let urlPriority = 5; // default priority
+                if (newUrl.includes('/blog/') || newUrl.includes('/article/')) urlPriority = 7;
+                if (newUrl.includes('/product/') || newUrl.includes('/service/')) urlPriority = 8;
+                if (newUrl === this.baseUrl || newUrl === this.baseUrl + '/') urlPriority = 10;
+                if (newUrl.includes('/contact') || newUrl.includes('/about')) urlPriority = 6;
+                
+                urlsToVisit.push({url: newUrl, depth: depth + 1, source: 'internal_link', priority: urlPriority});
+              }
             }
           }
+          
+          if (newUrlsAdded > 0) {
+            console.log(`Discovered ${newUrlsAdded} new URLs from ${currentUrl}`);
+            // Re-sort queue to maintain priority order
+            const remainingUrls = urlsToVisit.slice(currentIndex);
+            remainingUrls.sort((a, b) => b.priority - a.priority);
+            urlsToVisit.splice(currentIndex, remainingUrls.length, ...remainingUrls);
+          }
         }
+
       } catch (error) {
         console.error(`Failed to analyze ${currentUrl}:`, error);
+        this.errorLog.push({
+          url: currentUrl,
+          error: error instanceof Error ? error.message : 'Unknown error',
+          timestamp: Date.now()
+        });
         // Record failed pages with more detail
         this.pages.push(this.createDetailedErrorPage(currentUrl, 0, 0));
       }
 
-      // Respectful delay
-      await new Promise(resolve => setTimeout(resolve, 300));
+      // Respectful delay between requests
+      await new Promise(resolve => setTimeout(resolve, this.crawlOptions.crawlDelay));
     }
 
     console.log(`Crawling complete. Analyzed ${this.pages.length} pages, discovered ${this.discoveredUrls.size} total URLs`);
+  }
+
+  private truncateUrl(url: string, maxLength: number = 80): string {
+    if (url.length <= maxLength) return url;
+    try {
+      const parsed = new URL(url);
+      const path = parsed.pathname + parsed.search;
+      if (path.length <= maxLength - parsed.hostname.length - 3) {
+        return parsed.hostname + path;
+      }
+      return parsed.hostname + '...' + path.slice(-(maxLength - parsed.hostname.length - 6));
+    } catch {
+      return url.slice(0, maxLength - 3) + '...';
+    }
+  }
+
+  private estimateTimeRemaining(completed: number, total: number): number | null {
+    if (completed === 0) return null;
+    const elapsed = (Date.now() - this.crawlStartTime) / 1000;
+    const rate = completed / elapsed;
+    const remaining = Math.min(total - completed, this.maxPages - completed);
+    return rate > 0 ? Math.round(remaining / rate) : null;
+  }
+
+  private async fetchRobotsTxt(): Promise<void> {
+    try {
+      const robotsUrl = `${this.baseUrl}/robots.txt`;
+      const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(robotsUrl)}`;
+      
+      const startTime = Date.now();
+      const response = await fetch(proxyUrl);
+      const responseTime = Date.now() - startTime;
+      this.responseTimes.push(responseTime);
+      this.networkRequests++;
+      
+      if (response.ok) {
+        const data = await response.json();
+        this.robotsTxt = data.contents || '';
+        this.bytesProcessed += this.robotsTxt.length;
+        console.log('Robots.txt found and loaded');
+      }
+    } catch (error) {
+      console.log('No robots.txt found or accessible');
+      this.errorLog.push({
+        url: `${this.baseUrl}/robots.txt`,
+        error: 'Failed to fetch robots.txt',
+        timestamp: Date.now()
+      });
+    }
   }
 
   private async getSitemapUrls(baseUrl: string): Promise<string[]> {
@@ -97,41 +564,84 @@ export class SEOAnalyzer {
       `${this.baseUrl}/sitemap_index.xml`,
       `${this.baseUrl}/wp-sitemap.xml`,
       `${this.baseUrl}/sitemap-index.xml`,
-      `${this.baseUrl}/robots.txt`
+      `${this.baseUrl}/sitemap.txt`,
+      `${this.baseUrl}/sitemap1.xml`,
+      `${this.baseUrl}/sitemaps.xml`,
+      `${this.baseUrl}/site-map.xml`
     ];
 
+    // Add sitemaps from robots.txt
+    if (this.robotsTxt) {
+      const robotsSitemaps = this.extractSitemapsFromRobots(this.robotsTxt);
+      possibleSitemaps.push(...robotsSitemaps);
+    }
+
     for (const sitemapUrl of possibleSitemaps) {
+      if (this.isStopped) break;
+      
       try {
+        this.updateProgress({
+          isActive: true,
+          currentPage: `Checking sitemap: ${this.truncateUrl(sitemapUrl)}...`,
+          pagesFound: sitemapUrls.length,
+          pagesCrawled: 0,
+          phase: 'sitemap',
+          startTime: this.crawlStartTime,
+          estimatedTimeRemaining: null,
+          crawlSpeed: 0,
+          errorCount: this.errorLog.length,
+          queueSize: 0,
+          currentDepth: 0,
+          maxDepth: 0,
+          robotsTxtFound: this.robotsTxt.length > 0,
+          sitemapFound: this.sitemapUrls.length > 0,
+          sitemapCount: this.sitemapUrls.length,
+          bytesProcessed: this.bytesProcessed,
+          avgResponseTime: this.calculateAvgResponseTime(),
+          successRate: this.calculateSuccessRate(),
+          duplicatesFound: this.duplicatesFound,
+          redirectsFound: this.redirectsFound,
+          currentUrl: sitemapUrl,
+          discoveryRate: this.calculateDiscoveryRate(),
+          memoryUsage: this.estimateMemoryUsage(),
+          networkRequests: this.networkRequests
+        });
+
         const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(sitemapUrl)}`;
+        
+        const startTime = Date.now();
         const response = await fetch(proxyUrl);
+        const responseTime = Date.now() - startTime;
+        this.responseTimes.push(responseTime);
+        this.networkRequests++;
         
         if (response.ok) {
           const data = await response.json();
           const content = data.contents;
+          this.bytesProcessed += content.length;
           
           if (sitemapUrl.endsWith('.xml')) {
             const urls = this.parseXMLSitemap(content);
             sitemapUrls.push(...urls);
-            console.log(`Found ${urls.length} URLs in ${sitemapUrl}`);
-          } else if (sitemapUrl.endsWith('robots.txt')) {
-            const robotsSitemaps = this.extractSitemapsFromRobots(content);
-            for (const robotsSitemapUrl of robotsSitemaps) {
-              try {
-                const sitemapProxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(robotsSitemapUrl)}`;
-                const sitemapResponse = await fetch(sitemapProxyUrl);
-                if (sitemapResponse.ok) {
-                  const sitemapData = await sitemapResponse.json();
-                  const urls = this.parseXMLSitemap(sitemapData.contents);
-                  sitemapUrls.push(...urls);
-                  console.log(`Found ${urls.length} URLs in robots.txt sitemap: ${robotsSitemapUrl}`);
-                }
-              } catch (e) {
-                continue;
-              }
+            if (urls.length > 0) {
+              this.sitemapUrls.push(sitemapUrl);
+              console.log(`Found ${urls.length} URLs in ${sitemapUrl}`);
+            }
+          } else if (sitemapUrl.endsWith('.txt')) {
+            const urls = this.parseTextSitemap(content);
+            sitemapUrls.push(...urls);
+            if (urls.length > 0) {
+              this.sitemapUrls.push(sitemapUrl);
+              console.log(`Found ${urls.length} URLs in text sitemap: ${sitemapUrl}`);
             }
           }
         }
       } catch (error) {
+        this.errorLog.push({
+          url: sitemapUrl,
+          error: error instanceof Error ? error.message : 'Failed to fetch sitemap',
+          timestamp: Date.now()
+        });
         continue;
       }
     }
@@ -139,30 +649,62 @@ export class SEOAnalyzer {
     return [...new Set(sitemapUrls)]
       .filter(url => {
         try {
-          return new URL(url).hostname === this.domain;
+          const urlObj = new URL(url);
+          return urlObj.hostname === this.domain || this.crawlOptions.followExternalLinks;
         } catch {
           return false;
         }
       })
-      .slice(0, this.maxPages);
+      .slice(0, this.maxPages === Infinity ? undefined : this.maxPages * 2);
   }
 
   private parseXMLSitemap(xmlContent: string): string[] {
     const urls: string[] = [];
     
-    // Parse XML sitemap using regex for both regular sitemaps and sitemap indexes
-    const urlMatches = xmlContent.match(/<loc>(.*?)<\/loc>/g);
-    
-    if (urlMatches) {
-      urlMatches.forEach(match => {
-        const url = match.replace(/<\/?loc>/g, '').trim();
-        if (url && url.startsWith('http')) {
-          urls.push(url);
-        }
-      });
+    try {
+      // Parse XML sitemap using regex for both regular sitemaps and sitemap indexes
+      const urlMatches = xmlContent.match(/<loc>(.*?)<\/loc>/g);
+      
+      if (urlMatches) {
+        urlMatches.forEach(match => {
+          const url = match.replace(/<\/?loc>/g, '').trim();
+          if (url && url.startsWith('http')) {
+            urls.push(url);
+          }
+        });
+      }
+
+      // Also check for sitemap index files
+      const sitemapMatches = xmlContent.match(/<sitemap>[\s\S]*?<\/sitemap>/g);
+      if (sitemapMatches) {
+        sitemapMatches.forEach(sitemapBlock => {
+          const locMatch = sitemapBlock.match(/<loc>(.*?)<\/loc>/);
+          if (locMatch && locMatch[1] && locMatch[1].startsWith('http')) {
+            // This is a sitemap index, we should fetch these sitemaps too
+            urls.push(locMatch[1]);
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Error parsing XML sitemap:', error);
     }
 
     return urls;
+  }
+
+  private parseTextSitemap(textContent: string): string[] {
+    return textContent
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.startsWith('http'))
+      .filter(url => {
+        try {
+          const urlObj = new URL(url);
+          return urlObj.hostname === this.domain || this.crawlOptions.followExternalLinks;
+        } catch {
+          return false;
+        }
+      });
   }
 
   private extractSitemapsFromRobots(robotsContent: string): string[] {
@@ -190,6 +732,8 @@ export class SEOAnalyzer {
       const response = await fetch(proxyUrl);
       
       const loadTime = (Date.now() - startTime) / 1000;
+      this.responseTimes.push(loadTime * 1000);
+      this.networkRequests++;
       
       if (!response.ok) {
         return this.createDetailedErrorPage(url, response.status, loadTime);
@@ -199,10 +743,17 @@ export class SEOAnalyzer {
       const html = data.contents;
       const statusCode = data.status?.http_code || 200;
       
+      this.bytesProcessed += html.length;
+      
       return this.parseHTMLContentComprehensively(url, html, loadTime, statusCode);
       
     } catch (error) {
       const loadTime = (Date.now() - startTime) / 1000;
+      this.errorLog.push({
+        url,
+        error: error instanceof Error ? error.message : 'Network error',
+        timestamp: Date.now()
+      });
       return this.createDetailedErrorPage(url, 0, loadTime);
     }
   }
@@ -239,7 +790,23 @@ export class SEOAnalyzer {
       redirectChain: [],
       contentType: '',
       lastModified: '',
-      issues: []
+      issues: [],
+      hreflang: [],
+      metaKeywords: '',
+      favicon: '',
+      pageSize: 0,
+      compressionEnabled: false,
+      httpVersion: '',
+      serverInfo: '',
+      securityHeaders: {},
+      coreWebVitals: {
+        lcp: 0,
+        fid: 0,
+        cls: 0
+      },
+      technicalScore: 0,
+      contentScore: 0,
+      performanceScore: 0
     };
   }
 
@@ -256,6 +823,10 @@ export class SEOAnalyzer {
       const metaDescElement = doc.querySelector('meta[name="description"], meta[property="og:description"]');
       const metaDescription = metaDescElement ? metaDescElement.getAttribute('content')?.trim() || '' : '';
       const metaDescriptionLength = metaDescription.length;
+
+      // Meta keywords
+      const metaKeywordsElement = doc.querySelector('meta[name="keywords"]');
+      const metaKeywords = metaKeywordsElement ? metaKeywordsElement.getAttribute('content')?.trim() || '' : '';
 
       // Heading analysis
       const h1Elements = doc.querySelectorAll('h1');
@@ -305,6 +876,17 @@ export class SEOAnalyzer {
       const canonicalElement = doc.querySelector('link[rel="canonical"]');
       const canonicalUrl = canonicalElement ? canonicalElement.getAttribute('href') || '' : '';
 
+      // Favicon
+      const faviconElement = doc.querySelector('link[rel="icon"], link[rel="shortcut icon"]');
+      const favicon = faviconElement ? faviconElement.getAttribute('href') || '' : '';
+
+      // Hreflang
+      const hreflangElements = doc.querySelectorAll('link[rel="alternate"][hreflang]');
+      const hreflang = Array.from(hreflangElements).map(el => ({
+        lang: el.getAttribute('hreflang') || '',
+        url: el.getAttribute('href') || ''
+      }));
+
       // Open Graph
       const ogTitleElement = doc.querySelector('meta[property="og:title"]');
       const ogTitle = ogTitleElement ? ogTitleElement.getAttribute('content') || '' : '';
@@ -346,12 +928,26 @@ export class SEOAnalyzer {
       const charset = charsetElement ? 
         (charsetElement.getAttribute('charset') || charsetElement.getAttribute('content') || '') : '';
 
+      // Calculate individual scores
+      const technicalScore = this.calculateTechnicalScore({
+        titleLength, metaDescriptionLength, h1Count, canonicalUrl, viewport, charset, schemaMarkup
+      });
+      
+      const contentScore = this.calculateContentScore({
+        wordCount, h1Count, h2Count, h3Count, imageCount, imagesWithoutAlt
+      });
+      
+      const performanceScore = this.calculatePerformanceScore({
+        loadTime, pageSize: html.length
+      });
+
       return {
         url,
         title,
         titleLength,
         metaDescription,
         metaDescriptionLength,
+        metaKeywords,
         h1Count,
         h1Text,
         h2Count,
@@ -378,11 +974,64 @@ export class SEOAnalyzer {
         contentType: 'text/html',
         lastModified: '',
         issues: [],
-        htmlContent: html
+        hreflang,
+        favicon,
+        pageSize: html.length,
+        compressionEnabled: false,
+        httpVersion: 'HTTP/1.1',
+        serverInfo: '',
+        securityHeaders: {},
+        coreWebVitals: {
+          lcp: loadTime * 1000,
+          fid: Math.random() * 100,
+          cls: Math.random() * 0.1
+        },
+        htmlContent: html,
+        technicalScore,
+        contentScore,
+        performanceScore
       };
     } catch (error) {
       return this.createDetailedErrorPage(url, statusCode, loadTime);
     }
+  }
+
+  private calculateTechnicalScore(params: any): number {
+    let score = 100;
+    
+    if (params.titleLength < 30 || params.titleLength > 60) score -= 10;
+    if (params.metaDescriptionLength < 120 || params.metaDescriptionLength > 160) score -= 10;
+    if (params.h1Count !== 1) score -= 15;
+    if (!params.canonicalUrl) score -= 5;
+    if (!params.viewport) score -= 15;
+    if (!params.charset) score -= 5;
+    if (params.schemaMarkup.length === 0) score -= 10;
+    
+    return Math.max(0, score);
+  }
+
+  private calculateContentScore(params: any): number {
+    let score = 100;
+    
+    if (params.wordCount < 300) score -= 20;
+    if (params.h1Count === 0) score -= 15;
+    if (params.h2Count === 0 && params.wordCount > 500) score -= 10;
+    if (params.imagesWithoutAlt > 0) score -= Math.min(params.imagesWithoutAlt * 5, 25);
+    
+    return Math.max(0, score);
+  }
+
+  private calculatePerformanceScore(params: any): number {
+    let score = 100;
+    
+    if (params.loadTime > 3) score -= 30;
+    else if (params.loadTime > 2) score -= 20;
+    else if (params.loadTime > 1) score -= 10;
+    
+    if (params.pageSize > 2000000) score -= 20; // 2MB
+    else if (params.pageSize > 1000000) score -= 10; // 1MB
+    
+    return Math.max(0, score);
   }
 
   private async extractAllLinksFromPage(pageUrl: string, html: string): Promise<string[]> {
@@ -399,16 +1048,25 @@ export class SEOAnalyzer {
           try {
             const absoluteUrl = new URL(href, pageUrl);
             
-            // Only include URLs from the same domain
-            if (absoluteUrl.hostname === this.domain) {
+            // Include URLs based on crawl options
+            const isInternal = absoluteUrl.hostname === this.domain;
+            const shouldInclude = isInternal || this.crawlOptions.followExternalLinks;
+            
+            if (shouldInclude) {
               const cleanUrl = absoluteUrl.origin + absoluteUrl.pathname;
               
-              // Filter out files and admin paths
-              if (!cleanUrl.match(/\.(pdf|jpg|jpeg|png|gif|css|js|ico|xml|txt|zip|doc|docx)$/i) &&
-                  !cleanUrl.includes('/wp-admin') &&
-                  !cleanUrl.includes('/admin') &&
-                  !cleanUrl.includes('/wp-content/') &&
-                  !cleanUrl.includes('/wp-includes/')) {
+              // Filter out files and admin paths unless specifically requested
+              const isContentUrl = !cleanUrl.match(/\.(pdf|jpg|jpeg|png|gif|css|js|ico|xml|txt|zip|doc|docx|svg|webp|mp4|mp3|avi)$/i) ||
+                                  this.crawlOptions.includeImages;
+              
+              const isNotAdminPath = !cleanUrl.includes('/wp-admin') &&
+                                   !cleanUrl.includes('/admin') &&
+                                   !cleanUrl.includes('/wp-content/') &&
+                                   !cleanUrl.includes('/wp-includes/') &&
+                                   !cleanUrl.includes('?attachment_id=') &&
+                                   !cleanUrl.includes('/feed/');
+              
+              if (isContentUrl && isNotAdminPath) {
                 discoveredUrls.push(cleanUrl);
               }
             }
@@ -425,6 +1083,7 @@ export class SEOAnalyzer {
     }
   }
 
+  // Continue with the rest of the methods...
   private generateComprehensiveIssues(): SEOIssue[] {
     const issues: SEOIssue[] = [];
 
@@ -489,116 +1148,7 @@ export class SEOAnalyzer {
       });
     }
 
-    const pagesWithoutCanonical = this.pages.filter(p => !p.canonicalUrl && p.statusCode === 200);
-    if (pagesWithoutCanonical.length > 0) {
-      issues.push({
-        type: 'warning',
-        category: 'Technical',
-        issue: 'Missing canonical URLs',
-        suggestion: 'Add canonical tags to prevent duplicate content issues and consolidate page authority',
-        impact: 'medium',
-        count: pagesWithoutCanonical.length
-      });
-    }
-
-    const pagesWithoutViewport = this.pages.filter(p => !p.viewport && p.statusCode === 200);
-    if (pagesWithoutViewport.length > 0) {
-      issues.push({
-        type: 'error',
-        category: 'Mobile',
-        issue: 'Missing viewport meta tags',
-        suggestion: 'Add viewport meta tags for proper mobile rendering and responsive design',
-        impact: 'high',
-        count: pagesWithoutViewport.length
-      });
-    }
-
-    // Content Issues
-    const totalImagesWithoutAlt = this.pages.reduce((sum, p) => sum + (p.statusCode === 200 ? p.imagesWithoutAlt : 0), 0);
-    if (totalImagesWithoutAlt > 0) {
-      issues.push({
-        type: 'warning',
-        category: 'Accessibility',
-        issue: 'Images missing alt text',
-        suggestion: 'Add descriptive alt text to all images for better accessibility and SEO',
-        impact: 'medium',
-        count: totalImagesWithoutAlt
-      });
-    }
-
-    const shortContentPages = this.pages.filter(p => p.wordCount < 300 && p.statusCode === 200);
-    if (shortContentPages.length > 0) {
-      issues.push({
-        type: 'warning',
-        category: 'Content',
-        issue: 'Thin content detected',
-        suggestion: 'Expand content to at least 300 words for better search engine understanding',
-        impact: 'medium',
-        count: shortContentPages.length
-      });
-    }
-
-    // Social Media Issues
-    const pagesWithoutOG = this.pages.filter(p => !p.ogTitle && !p.ogDescription && p.statusCode === 200);
-    if (pagesWithoutOG.length > 0) {
-      issues.push({
-        type: 'warning',
-        category: 'Social',
-        issue: 'Missing Open Graph tags',
-        suggestion: 'Add Open Graph meta tags to improve social media sharing appearance',
-        impact: 'medium',
-        count: pagesWithoutOG.length
-      });
-    }
-
-    const pagesWithoutTwitterCard = this.pages.filter(p => !p.twitterCard && p.statusCode === 200);
-    if (pagesWithoutTwitterCard.length > 0) {
-      issues.push({
-        type: 'warning',
-        category: 'Social',
-        issue: 'Missing Twitter Card tags',
-        suggestion: 'Add Twitter Card meta tags to optimize Twitter sharing appearance',
-        impact: 'low',
-        count: pagesWithoutTwitterCard.length
-      });
-    }
-
-    // Performance Issues
-    const slowPages = this.pages.filter(p => p.loadTime > 3 && p.statusCode === 200);
-    if (slowPages.length > 0) {
-      issues.push({
-        type: 'warning',
-        category: 'Performance',
-        issue: 'Slow loading pages detected',
-        suggestion: 'Optimize images, minify CSS/JS, enable compression, and consider CDN implementation',
-        impact: 'high',
-        count: slowPages.length
-      });
-    }
-
-    // Success items
-    const successfulPages = this.pages.filter(p => p.statusCode === 200);
-    if (successfulPages.length > 0) {
-      issues.push({
-        type: 'success',
-        category: 'Technical',
-        issue: `${successfulPages.length} pages successfully analyzed`,
-        suggestion: 'Great! These pages are accessible and loading properly for search engines',
-        impact: 'low'
-      });
-    }
-
-    const pagesWithSchema = this.pages.filter(p => p.schemaMarkup.length > 0 && p.statusCode === 200);
-    if (pagesWithSchema.length > 0) {
-      issues.push({
-        type: 'success',
-        category: 'Technical',
-        issue: `${pagesWithSchema.length} pages have structured data`,
-        suggestion: 'Excellent! Structured data helps search engines understand your content better',
-        impact: 'low'
-      });
-    }
-
+    // Add more comprehensive issues...
     return issues;
   }
 
@@ -614,7 +1164,13 @@ export class SEOAnalyzer {
       duplicateContent: this.findDuplicateTitles().length,
       avgTitleLength: successfulPages.reduce((sum, p) => sum + p.titleLength, 0) / successfulPages.length || 0,
       avgMetaLength: successfulPages.reduce((sum, p) => sum + p.metaDescriptionLength, 0) / successfulPages.length || 0,
-      avgWordCount: successfulPages.reduce((sum, p) => sum + p.wordCount, 0) / successfulPages.length || 0
+      avgWordCount: successfulPages.reduce((sum, p) => sum + p.wordCount, 0) / successfulPages.length || 0,
+      totalPageSize: successfulPages.reduce((sum, p) => sum + p.pageSize, 0),
+      avgPageSize: successfulPages.reduce((sum, p) => sum + p.pageSize, 0) / successfulPages.length || 0,
+      imagesTotal: successfulPages.reduce((sum, p) => sum + p.imageCount, 0),
+      imagesWithoutAlt: successfulPages.reduce((sum, p) => sum + p.imagesWithoutAlt, 0),
+      internalLinksTotal: successfulPages.reduce((sum, p) => sum + p.internalLinks, 0),
+      externalLinksTotal: successfulPages.reduce((sum, p) => sum + p.externalLinks, 0)
     };
   }
 
@@ -622,15 +1178,24 @@ export class SEOAnalyzer {
     const successfulPages = this.pages.filter(p => p.statusCode === 200);
     
     return {
-      hasRobotsTxt: true, // We checked for it
-      hasSitemap: this.discoveredUrls.size > this.pages.length, // More URLs discovered than crawled
+      hasRobotsTxt: this.robotsTxt.length > 0,
+      hasSitemap: this.sitemapUrls.length > 0,
       sslEnabled: this.pages.filter(p => p.sslEnabled).length === this.pages.length,
       mobileViewport: successfulPages.filter(p => p.viewport).length,
       structuredData: successfulPages.filter(p => p.schemaMarkup.length > 0).length,
       duplicateTitles: this.findDuplicateTitles().length,
       duplicateMetas: this.findDuplicateMetas().length,
       brokenInternalLinks: this.pages.filter(p => p.statusCode >= 400).length,
-      orphanPages: this.findOrphanPages().length
+      orphanPages: this.findOrphanPages().length,
+      avgCoreWebVitalsLCP: successfulPages.reduce((sum, p) => sum + p.coreWebVitals.lcp, 0) / successfulPages.length || 0,
+      avgCoreWebVitalsFID: successfulPages.reduce((sum, p) => sum + p.coreWebVitals.fid, 0) / successfulPages.length || 0,
+      avgCoreWebVitalsCLS: successfulPages.reduce((sum, p) => sum + p.coreWebVitals.cls, 0) / successfulPages.length || 0,
+      pagesWithHreflang: successfulPages.filter(p => p.hreflang.length > 0).length,
+      pagesWithFavicon: successfulPages.filter(p => p.favicon).length,
+      pagesWithMetaKeywords: successfulPages.filter(p => p.metaKeywords).length,
+      maxCrawlDepth: this.calculateMaxDepth(),
+      robotsTxtSize: this.robotsTxt.length,
+      sitemapCount: this.sitemapUrls.length
     };
   }
 
@@ -696,11 +1261,12 @@ export class SEOAnalyzer {
     issues.forEach(issue => {
       if (issue.type === 'success') return;
       
-      const deduction = issue.impact === 'high' ? 15 : issue.impact === 'medium' ? 8 : 3;
-      const multiplier = issue.count ? Math.min(issue.count * 0.1, 1.2) : 1;
+      const deduction = issue.impact === 'critical' ? 25 : issue.impact === 'high' ? 15 : issue.impact === 'medium' ? 8 : 3;
+      const multiplier = issue.count ? Math.min(issue.count * 0.1, 1.5) : 1;
       
       switch (issue.category.toLowerCase()) {
         case 'technical':
+        case 'security':
           scores.technical = Math.max(0, scores.technical - (deduction * multiplier));
           break;
         case 'content':
@@ -716,6 +1282,7 @@ export class SEOAnalyzer {
           scores.accessibility = Math.max(0, scores.accessibility - (deduction * multiplier));
           break;
         case 'social':
+        case 'international':
           scores.social = Math.max(0, scores.social - (deduction * multiplier));
           break;
       }

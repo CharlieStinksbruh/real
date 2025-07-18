@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronDown, ChevronRight, ExternalLink, AlertTriangle, CheckCircle, Clock } from 'lucide-react';
+import { ChevronDown, ChevronRight, ExternalLink, AlertTriangle, CheckCircle, Clock, XCircle } from 'lucide-react';
 import { PageAnalysis } from '../types/seo';
 
 interface PagesListProps {
@@ -129,6 +129,18 @@ export const PagesList: React.FC<PagesListProps> = ({ pages }) => {
                       <span className="text-xs font-medium">{page.wordCount}</span>
                     </div>
                   </div>
+
+                  <div>
+                    <p className="text-xs text-gray-500 mb-1">Page Size</p>
+                    <div className="flex items-center gap-1">
+                      {page.pageSize < 1000000 ? (
+                        <CheckCircle className="w-3 h-3 text-green-500" />
+                      ) : (
+                        <AlertTriangle className="w-3 h-3 text-red-500" />
+                      )}
+                      <span className="text-xs font-medium">{(page.pageSize / 1024).toFixed(1)}KB</span>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
@@ -151,6 +163,23 @@ export const PagesList: React.FC<PagesListProps> = ({ pages }) => {
                   <div>
                     <p className="text-xs text-gray-500 mb-1">External Links</p>
                     <span className="text-xs font-medium">{page.externalLinks}</span>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500 mb-1">Core Web Vitals</p>
+                    <div className="space-y-1">
+                      <div className="text-xs">
+                        <span className="text-gray-500">LCP:</span>
+                        <span className={`ml-1 font-medium ${page.coreWebVitals.lcp < 2500 ? 'text-green-600' : page.coreWebVitals.lcp < 4000 ? 'text-yellow-600' : 'text-red-600'}`}>
+                          {(page.coreWebVitals.lcp / 1000).toFixed(1)}s
+                        </span>
+                      </div>
+                      <div className="text-xs">
+                        <span className="text-gray-500">CLS:</span>
+                        <span className={`ml-1 font-medium ${page.coreWebVitals.cls < 0.1 ? 'text-green-600' : page.coreWebVitals.cls < 0.25 ? 'text-yellow-600' : 'text-red-600'}`}>
+                          {page.coreWebVitals.cls.toFixed(3)}
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -214,6 +243,53 @@ export const PagesList: React.FC<PagesListProps> = ({ pages }) => {
                     </div>
                   </div>
                 </div>
+
+                {(page.hreflang.length > 0 || page.metaKeywords || page.favicon) && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                    <div>
+                      <p className="text-xs text-gray-500 mb-1">International SEO</p>
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          {page.hreflang.length > 0 ? (
+                            <CheckCircle className="w-3 h-3 text-green-500" />
+                          ) : (
+                            <XCircle className="w-3 h-3 text-gray-400" />
+                          )}
+                          <span className="text-xs">Hreflang ({page.hreflang.length})</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {page.favicon ? (
+                            <CheckCircle className="w-3 h-3 text-green-500" />
+                          ) : (
+                            <XCircle className="w-3 h-3 text-red-500" />
+                          )}
+                          <span className="text-xs">Favicon</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500 mb-1">Additional Meta</p>
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          {page.metaKeywords ? (
+                            <CheckCircle className="w-3 h-3 text-green-500" />
+                          ) : (
+                            <XCircle className="w-3 h-3 text-gray-400" />
+                          )}
+                          <span className="text-xs">Meta Keywords</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {page.lang ? (
+                            <CheckCircle className="w-3 h-3 text-green-500" />
+                          ) : (
+                            <XCircle className="w-3 h-3 text-red-500" />
+                          )}
+                          <span className="text-xs">Language Declaration</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {page.h1Text.length > 0 && (
                   <div className="mb-4">
